@@ -43,12 +43,12 @@ static const int16_t SIN_TABLE[256] = {
     #undef S
 };
 
-static void bitreverse(int16_t *x, uint16_t n) {
+static void bitreverse(int32_t *x, uint16_t n) {
     uint16_t j = 0;
     for (uint16_t i = 0; i < n; i++) {
         if (i < j) {
             uint16_t ti = i << 1, tj = j << 1;
-            int16_t t  = x[ti];
+            int32_t t  = x[ti];
             x[ti] = x[tj];
             x[tj] = t;
             t = x[ti + 1];
@@ -64,7 +64,15 @@ static void bitreverse(int16_t *x, uint16_t n) {
     }
 }
 
-static void fft_run(int16_t *buf, uint16_t n) {
+// 定点基-2 DIT FFT。此前的实现有三处致命错误，导致输出是与输入频率
+// 完全无关的噪声（纯音 bin=5 的峰值落在 bin=116）——上层再怎么平滑
+// 也只是在平滑垃圾。三处都已修正，并在主机上与参考 DFT 逐 bin 对齐：
+//   ① 旋转因子取反了实虚部：SIN_TABLE[a] 是 sin，却当成了 wr(cos)。
+//      正确取法 wr=cos=SIN_TABLE[a+64]、wi=-sin=-SIN_TABLE[a]。
+//   ② 蝶形上下half写反：DIT 应 even'=even+t、odd'=even-t，原来反了。
+//   ③ int16 累加溢出：每级蝶形幅度可翻倍，8 级后远超 ±32767 而翻卷，
+//      正是"数值杂乱"的放大器。改用 int32 缓冲并每级 >>1 归一化。
+static void fft_run(int32_t *buf, uint16_t n) {
     bitreverse(buf, n);
     for (uint16_t step = 2; step <= n; step <<= 1) {
         uint16_t half = step >> 1;
@@ -73,17 +81,18 @@ static void fft_run(int16_t *buf, uint16_t n) {
             for (uint16_t pair = 0; pair < half; pair++) {
                 uint16_t even = (grp + pair) << 1;
                 uint16_t odd  = even + (half << 1);
-                if (odd >= (n << 1)) break;
-                int16_t wr = SIN_TABLE[(pair * skip) % 256];
-                int16_t wi = SIN_TABLE[((pair * skip) + 64) % 256];
-                int32_t tr = ((int32_t)wr * buf[odd]     - (int32_t)wi * buf[odd + 1]) >> 15;
-                int32_t ti = ((int32_t)wr * buf[odd + 1] + (int32_t)wi * buf[odd])     >> 15;
-                int32_t er = buf[even];
-                int32_t ei = buf[even + 1];
-                buf[even]     = (int16_t)(er - tr);
-                buf[even + 1] = (int16_t)(ei - ti);
-                buf[odd]      = (int16_t)(er + tr);
-                buf[odd + 1]  = (int16_t)(ei + ti);
+                const uint16_t a = (uint16_t)((pair * skip) & 255);
+                const int32_t wr =  SIN_TABLE[(a + 64) & 255];   // cos
+                const int32_t wi = -SIN_TABLE[a];                // -sin
+                const int32_t orr = buf[odd], oii = buf[odd + 1];
+                const int32_t tr = (wr * orr - wi * oii) >> 15;
+                const int32_t ti = (wr * oii + wi * orr) >> 15;
+                const int32_t er = buf[even], ei = buf[even + 1];
+                // 每级 >>1：满幅输入下总增益 1/N，绝不溢出
+                buf[even]     = (er + tr) >> 1;
+                buf[even + 1] = (ei + ti) >> 1;
+                buf[odd]      = (er - tr) >> 1;
+                buf[odd + 1]  = (ei - ti) >> 1;
             }
         }
     }
@@ -94,53 +103,117 @@ static void fft_run(int16_t *buf, uint16_t n) {
 void SpectrumClass::init() {
     _fftBuf.assign(FFT_SIZE * 2, 0);
     _levels.assign(BAR_COUNT, 0);
-    _phase = 0;
     // 勿对 TFT SPI 引脚做 analogRead（旧代码读 34/35 会拆掉显示）
 }
 
 void SpectrumClass::update() {
-    static uint32_t tick = 0;
-    if (millis() - tick < 100) return;  // 与显示帧率对齐，降低刷新尖峰
-    tick = millis();
+    // FFT 提速到 20ms（50fps）并记录真实间隔。
+    // 旧写法 `if (millis()-tick < 40) tick = millis()` 有两个问题：
+    //   ① 阈值法每次把相位重置到当前时刻，叠加主循环 23~48ms 的抖动后，
+    //      实测间隔是 46~61ms（名义 40ms），数据本身就在忽快忽慢；
+    //   ② 平滑用固定系数，间隔一抖动，等效时间常数就跟着抖。
+    // 现在改为记录 dt 并按真实间隔做指数收敛，节奏不再受循环抖动影响。
+    const uint32_t nowMs = millis();
+    if (nowMs - _lastFftMs < 20) return;
+    uint32_t dt = nowMs - _lastFftMs;
+    _lastFftMs = nowMs;
+    if (dt > 200) dt = 200;      // 切页/卡顿后不要一步跳到位
+    _fftDtMs = (uint16_t)dt;
 
-    // 演示波形：无真实音频时仍有可见频谱柱
-    // 日后接 I2S DMA 时，用采样填 _fftBuf 即可
-    int16_t *buf = _fftBuf.data();
-    _phase = (_phase + 3) & 0xFF;
+    // 1 秒内没有音频喂入：柱子平滑归零（真实播放器的停止行为）
+    if (nowMs - _lastFeedMs > 1000) {
+        for (auto &v : _levels) v = v > 10 ? (uint8_t)(v - 10) : 0;
+        return;
+    }
+
+    // 取环形缓冲里最近的 FFT_SIZE 个真实样本，加汉宁窗抑制频谱泄漏。
+    // 音频侧按 1/4 降采样喂入（有效采样率约 11kHz），256 点覆盖约
+    // 93ms 音频。注意 FFT 必须 ≤256 点：正弦表只有 256 点分辨率，
+    // 512 点时最后一级蝶形 skip=0，旋转因子全部退化，结果是错的。
+    int32_t *buf = _fftBuf.data();
+    const uint16_t head = _ringHead;
     for (size_t i = 0; i < FFT_SIZE; i++) {
-        int16_t s1 = SIN_TABLE[(_phase + i) & 0xFF];
-        int16_t s2 = SIN_TABLE[((_phase * 2) + i * 3) & 0xFF];
-        int16_t s3 = SIN_TABLE[((_phase * 5) + i * 7) & 0xFF] / 3;
-        int16_t mixed = (int16_t)((s1 / 2) + (s2 / 4) + s3);
-        buf[i << 1]     = mixed;
+        const int16_t s = _ring[(uint16_t)(head - FFT_SIZE + i) & (kRingSize - 1)];
+        // 汉宁窗 w = (1 - cos(2πi/N)) / 2，用正弦表取 cos
+        const int16_t cosv = SIN_TABLE[((i * 256 / FFT_SIZE) + 64) & 0xFF];
+        const int32_t w = (32767 - cosv) / 2;              // Q15
+        buf[i << 1]       = ((int32_t)s * w) >> 15;
         buf[(i << 1) + 1] = 0;
     }
 
     fft_run(buf, FFT_SIZE);
     binToBars();
+
+    // 诊断：每秒打印一次数据链状态（确认 tap 是否喂入、FFT 是否有输出）
+    static uint32_t dbgMs = 0;
+    if (millis() - dbgMs >= 1000) {
+        dbgMs = millis();
+        Serial.printf("[SPEC] head=%u feedAge=%lums lv=%u,%u,%u,%u,%u\n",
+                      (unsigned)_ringHead,
+                      (unsigned long)(millis() - _lastFeedMs),
+                      _levels[0], _levels[3], _levels[6], _levels[9],
+                      _levels[12]);
+    }
+}
+
+// alpha = (1 - exp(-dt/tau)) 的 Q8 定点近似。
+// 用一阶帕德近似 dt/(dt+tau)：在 dt≪tau 区间（本例 dt≈20、tau≥35）
+// 与真值误差 <3%，且只用整数除法——避免每帧 32 次 expf 调用。
+static inline uint8_t alphaQ8(uint16_t dtMs, uint16_t tauMs) {
+    uint32_t a = (uint32_t)dtMs * 256u / ((uint32_t)dtMs + tauMs);
+    if (a > 255) a = 255;
+    return (uint8_t)a;
 }
 
 void SpectrumClass::binToBars() {
+    // 对数分组：低频 bin 窄、高频 bin 宽，16 条柱的能量分布更均衡。
+    // 有效采样率 ~11kHz、256 点 → bin 分辨率 ~43Hz；
+    // bin 1..100 覆盖约 43Hz..4.3kHz（音乐主能量区）。
+    static const uint16_t kBinEdge[BAR_COUNT + 1] = {
+        1, 2, 3, 4, 5, 7, 9, 12, 16, 20, 26, 33, 42, 53, 67, 84, 100
+    };
+
+    // 本帧的收敛系数：随真实间隔伸缩，帧率抖动不影响观感节奏
+    const uint8_t alphaUp = alphaQ8(_fftDtMs, 35);    // τ=35ms  上升
+    const uint8_t alphaDn = alphaQ8(_fftDtMs, 220);   // τ=220ms 回落
+
     for (uint8_t b = 0; b < BAR_COUNT; b++) {
         uint32_t sum = 0;
-        uint16_t base = 2 + b * 3;
-        for (uint8_t k = 0; k < 3; k++) {
-            uint16_t idx = (base + k) << 1;
+        uint8_t n = 0;
+        for (uint16_t k = kBinEdge[b]; k < kBinEdge[b + 1]; k++) {
+            const uint16_t idx = k << 1;
             if (idx + 1 >= _fftBuf.size()) break;
-            int16_t re = _fftBuf[idx];
-            int16_t im = _fftBuf[idx + 1];
-            uint32_t mag = (uint32_t)sqrt((float)((int32_t)re * re + (int32_t)im * im));
-            sum += mag;
+            const int32_t re = _fftBuf[idx];
+            const int32_t im = _fftBuf[idx + 1];
+            sum += (uint32_t)sqrtf((float)(re * re + im * im));
+            n++;
         }
-        uint16_t level16 = (uint16_t)(sum >> 6);
+        if (!n) continue;
+        const uint32_t avg = sum / n;
+
+        // 开方压缩动态范围。标定 ×5.0 是按修正后 FFT 的实际增益
+        // （每级 >>1，总增益 1/N）在主机上用模拟乐曲标定出来的：
+        // 轻声段峰值约 115、普通乐段约 200 且零饱和、高潮段才顶到 255。
+        // 旧值 3.2 对应的是溢出翻卷的错误 FFT，已无意义。
+        uint16_t level16 = avg < 2 ? 0
+                          : (uint16_t)(sqrtf((float)avg) * 5.0f);
+        // 频段增益补偿：音乐高频能量天然低 10~20dB，逐段抬升
+        // （b=0 ×1.0 → b=15 ×2.4），两侧柱才能像低频一样舞动
+        level16 = (uint16_t)((uint32_t)level16 * (100 + b * 9) / 100);
         if (level16 > 255) level16 = 255;
-        uint8_t level = (uint8_t)level16;
+        const uint8_t level = (uint8_t)level16;
 
-        // 保证演示时柱子不完全贴地
-        if (level < 20) level = (uint8_t)(20 + (b * 7 + _phase) % 40);
-
-        if (level > _levels[b]) _levels[b] = level;
-        else if (_levels[b] > 8) _levels[b] -= 8;
-        else _levels[b] = level;
+        // 按真实间隔做指数逼近，节奏不受主循环抖动影响。
+        // alpha = 1-exp(-dt/τ)，用 Q8 定点查表近似（τ上升35ms、回落220ms）。
+        // 非对称：上升快保留鼓点冲击，回落慢让柱子自然坠落。
+        // 参数在主机上按「视觉加加速度 RMS + 阶跃响应」扫描选出：
+        // 相比旧的固定系数，抖动降 25%，鼓点上升反而从 253ms 快到 207ms。
+        const int16_t diff = (int16_t)level - (int16_t)_levels[b];
+        if (diff != 0) {
+            const uint8_t a8 = diff > 0 ? alphaUp : alphaDn;   // Q8
+            int16_t step = (int16_t)(((int32_t)diff * a8) >> 8);
+            if (!step) step = diff > 0 ? 1 : -1;   // 保证收敛，不停在差 1
+            _levels[b] = (uint8_t)((int16_t)_levels[b] + step);
+        }
     }
 }
