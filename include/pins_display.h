@@ -20,7 +20,7 @@
 
 // 欢迎页无操作多久后关背光（ms），0=不自动关
 #ifndef BL_IDLE_OFF_MS
-#define BL_IDLE_OFF_MS 30000
+#define BL_IDLE_OFF_MS 600000
 #endif
 
 #define TFT_PHYS_W  240

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ESP32-BOX 音乐播放页设计方案</title>
+<style>
+  body{margin:0;padding:32px 24px 64px;background:#1c1f24;color:#e8eaed;
+       font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:22px;margin:0 0 6px}
+  .sub{color:#9aa3ad;font-size:13px;margin-bottom:28px;line-height:1.7}
+  .scheme{margin-bottom:46px;padding:20px;border-radius:16px;background:#24282e}
+  .scheme h2{font-size:16px;margin:0 0 4px}
+  .scheme .note{color:#9aa3ad;font-size:12.5px;margin:0 0 16px;line-height:1.75}
+  .row{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+  .cap{font-size:11.5px;color:#9aa3ad;margin-top:7px;text-align:center}
+
+  /* ===== 320x240 模拟屏（Apple 深色主题）===== */
+  .screen{width:320px;height:240px;border-radius:10px;overflow:hidden;position:relative;
+          flex:0 0 auto;box-shadow:0 6px 22px #0007;background:#000;color:#fff;
+          font-size:11px;font-family:"Helvetica Neue",Arial,"PingFang SC",sans-serif}
+  .bar{height:28px;display:flex;align-items:center;justify-content:space-between;
+       padding:0 8px;border-bottom:1px solid #38383a;font-weight:700;font-size:13px}
+  .bar .mid{font-weight:600;font-size:12px}
+  .bar .ic{display:flex;gap:6px;align-items:center}
+  .batt{display:inline-flex;align-items:center;gap:2px}
+  .batt .shell{width:19px;height:11px;border:1px solid #8e8e93;border-radius:3px;
+               display:flex;align-items:center;padding:1.5px}
+  .batt .lv{width:74%;height:100%;background:#30d158;border-radius:1.5px}
+  .batt span{font-size:10px;color:#fff}
+
+  /* 封面 */
+  .cover{border-radius:10px;background:linear-gradient(135deg,#3a3a3c,#1c1c1e);
+         border:1px solid #48484a;display:grid;place-items:center;flex:0 0 auto;position:relative}
+  .cover .disc{border-radius:50%;background:conic-gradient(#48484a,#2c2c2e,#48484a,#2c2c2e,#48484a);
+               display:grid;place-items:center}
+  .cover .disc:after{content:"";width:22%;height:22%;border-radius:50%;background:#0a84ff}
+
+  /* 文本 */
+  .title{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .artist{font-size:12px;color:#c7c7cc;margin-top:3px}
+  .album{font-size:11px;color:#8e8e93;margin-top:2px}
+
+  /* 进度条 */
+  .prog{display:flex;align-items:center;gap:7px;font-size:10px;color:#8e8e93}
+  .track{flex:1;height:3px;background:#38383a;border-radius:2px;position:relative}
+  .track i{position:absolute;left:0;top:0;height:100%;width:24%;background:#0a84ff;border-radius:2px}
+  .track b{position:absolute;left:24%;top:-2.5px;width:8px;height:8px;border-radius:50%;
+           background:#fff;transform:translateX(-4px)}
+
+  /* 控制键 */
+  .ctrl{display:flex;align-items:center;justify-content:center;gap:26px}
+  .ctrl svg{fill:#fff}
+  .ctrl .main{width:34px;height:34px;border-radius:50%;background:#fff;
+              display:grid;place-items:center}
+  .ctrl .main svg{fill:#000}
+  /* 音量 */
+  .vol{display:flex;align-items:center;gap:6px;font-size:10px;color:#8e8e93}
+  .vol .vtrack{flex:1;height:3px;background:#38383a;border-radius:2px;position:relative}
+  .vol .vtrack i{position:absolute;left:0;top:0;height:100%;width:62%;background:#c7c7cc;border-radius:2px}
+
+  /* 歌词 */
+  .lyric{text-align:center;line-height:1.55}
+  .ly-prev{color:#5a5a5e;font-size:12px}
+  .ly-cur{color:#fff;font-size:17px;font-weight:700;margin:5px 0}
+  .ly-cur.blue{color:#0a84ff}
+  .ly-next{color:#48484a;font-size:12px}
+  .ly-far{color:#333336;font-size:11px}
+
+  /* 频谱 */
+  .spec{display:flex;align-items:flex-end;gap:3px;height:100%}
+  .spec i{flex:1;border-radius:2px 2px 0 0;
+          background:linear-gradient(to top,#0a84ff,#64d2ff)}
+
+  /* 页面指示点 */
+  .dots{position:absolute;bottom:5px;left:0;right:0;display:flex;justify-content:center;gap:7px}
+  .dots i{width:5px;height:5px;border-radius:50%;background:#48484a}
+  .dots i.on{background:#0a84ff;width:6px;height:6px}
+</style>
+</head>
+<body>
+<h1>音乐播放页设计方案</h1>
+<p class="sub">Apple 深色主题（方案 E 配色）· 320×240 实屏比例 · 含封面与歌词<br>
+控制键示意为屏幕元素，实机可由实体按键（播放/音量±）与摇杆操作，屏上只做状态反馈。</p>
+
+<!-- ============ 方案 A 三页滑动 ============ -->
+<div class="scheme">
+  <h2>方案 A · 三页滑动（推荐）</h2>
+  <p class="note">摇杆左右在三个子页间切换，与首页「时钟/天气」双页轮换的交互一致。每页只专注一件事，都不拥挤。
+    封面 88×88 圆角方块（无封面时画黑胶唱片矢量占位）；歌词页当前句大号白字、前后句渐隐；频谱页复用已有的 16 条 FFT 柱。</p>
+  <div class="row">
+    <!-- ① Now Playing -->
+    <div>
+      <div class="screen">
+        <div class="bar"><span>08/09</span><span class="mid">音乐</span>
+          <span class="ic"><span class="batt"><span class="shell"><i class="lv"></i></span><span>82</span></span></span></div>
+        <div style="display:flex;gap:12px;padding:12px 13px 0">
+          <div class="cover" style="width:88px;height:88px">
+            <div class="disc" style="width:66px;height:66px"></div>
+          </div>
+          <div style="flex:1;min-width:0;padding-top:4px">
+            <div class="title">Bohemian Rhapsody</div>
+            <div class="artist">Queen</div>
+            <div class="album">A Night at the Opera</div>
+          </div>
+        </div>
+        <div style="padding:10px 13px 0;text-align:center;color:#c7c7cc;font-size:12px">
+          ♪ 是真实人生还是幻影
+        </div>
+        <div style="padding:11px 13px 0">
+          <div class="prog"><span>1:24</span>
+            <span class="track"><i></i><b></b></span><span>5:55</span></div>
+        </div>
+        <div class="ctrl" style="margin-top:11px">
+          <svg width="17" height="14" viewBox="0 0 17 14"><path d="M2 1v12M15 1L6 7l9 6z"
+            stroke="#fff" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          <span class="main"><svg width="13" height="15" viewBox="0 0 13 15"><path d="M1 1l11 6.5L1 14z"/></svg></span>
+          <svg width="17" height="14" viewBox="0 0 17 14"><path d="M15 1v12M2 1l9 6-9 6z"
+            stroke="#fff" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        </div>
+        <div class="dots"><i class="on"></i><i></i><i></i></div>
+      </div>
+      <div class="cap">① Now Playing · 封面 + 曲目 + 当前歌词</div>
+    </div>
+    <!-- ② 歌词全屏 -->
+    <div>
+      <div class="screen">
+        <div class="bar"><span>08/09</span><span class="mid">音乐</span>
+          <span class="ic"><span class="batt"><span class="shell"><i class="lv"></i></span><span>82</span></span></span></div>
+        <div class="lyric" style="padding:20px 16px 0">
+          <div class="ly-far">Is this the real life</div>
+          <div class="ly-prev">是真实人生还是幻影</div>
+          <div class="ly-cur">陷入山崩地裂</div>
+          <div class="ly-next">睁开你的双眼</div>
+          <div class="ly-far">看看天空</div>
+        </div>
+        <div style="position:absolute;left:13px;right:13px;bottom:22px">
+          <div class="prog"><span>1:24</span>
+            <span class="track"><i></i><b></b></span><span>5:55</span></div>
+        </div>
+        <div class="dots"><i></i><i class="on"></i><i></i></div>
+      </div>
+      <div class="cap">② 歌词全屏 · 当前句居中高亮，前后渐隐</div>
+    </div>
+    <!-- ③ 频谱 -->
+    <div>
+      <div class="screen">
+        <div class="bar"><span>08/09</span><span class="mid">音乐</span>
+          <span class="ic"><span class="batt"><span class="shell"><i class="lv"></i></span><span>82</span></span></span></div>
+        <div style="padding:10px 13px 0">
+          <div class="title" style="font-size:14px">Bohemian Rhapsody</div>
+          <div class="artist">Queen</div>
+        </div>
+        <div style="height:96px;padding:8px 13px 0">
+          <div class="spec">
+            <i style="height:30%"></i><i style="height:52%"></i><i style="height:74%"></i><i style="height:96%"></i>
+            <i style="height:80%"></i><i style="height:62%"></i><i style="height:44%"></i><i style="height:28%"></i>
+            <i style="height:40%"></i><i style="height:58%"></i><i style="height:82%"></i><i style="height:100%"></i>
+            <i style="height:78%"></i><i style="height:54%"></i><i style="height:36%"></i><i style="height:22%"></i>
+          </div>
+        </div>
+        <div style="padding:9px 13px 0">
+          <div class="prog"><span>1:24</span>
+            <span class="track"><i></i><b></b></span><span>5:55</span></div>
+          <div class="vol" style="margin-top:8px">
+            <svg width="13" height="11" viewBox="0 0 13 11" fill="#8e8e93"><path d="M0 3.5h2.6L6 0v11L2.6 7.5H0z"/>
+              <path d="M8.4 3a3.6 3.6 0 0 1 0 5" stroke="#8e8e93" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+              <path d="M10.4 1a6.4 6.4 0 0 1 0 9" stroke="#8e8e93" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+            <span class="vtrack"><i></i></span><span>62%</span></div>
+        </div>
+        <div class="dots"><i></i><i></i><i class="on"></i></div>
+      </div>
+      <div class="cap">③ 频谱 · 复用已有 FFT，蓝→青渐变柱</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 方案 B 单页全信息 ============ -->
+<div class="scheme">
+  <h2>方案 B · 单页全信息</h2>
+  <p class="note">一屏看全，不用切页。封面缩到 72×72 让位给歌词区（3 行滚动，当前句蓝色高亮 + 左侧游标）。
+    代价：频谱放不下，封面偏小，整体信息密度较高。</p>
+  <div class="row">
+    <div>
+      <div class="screen">
+        <div class="bar"><span>08/09</span><span class="mid">音乐</span>
+          <span class="ic"><span class="batt"><span class="shell"><i class="lv"></i></span><span>82</span></span></span></div>
+        <div style="display:flex;gap:11px;padding:9px 13px 0">
+          <div class="cover" style="width:72px;height:72px">
+            <div class="disc" style="width:54px;height:54px"></div>
+          </div>
+          <div style="flex:1;min-width:0;padding-top:2px">
+            <div class="title" style="font-size:14px">Bohemian Rhapsody</div>
+            <div class="artist">Queen</div>
+            <div style="margin-top:11px">
+              <div class="prog"><span>1:24</span>
+                <span class="track"><i></i><b></b></span><span>5:55</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="margin:10px 13px 0;padding:9px 11px;background:#1c1c1e;border-radius:9px">
+          <div style="color:#8e8e93;font-size:12px">是真实人生还是幻影</div>
+          <div style="color:#0a84ff;font-size:14px;font-weight:700;margin:4px 0;
+                      display:flex;gap:6px;align-items:center">
+            <span style="width:3px;height:13px;background:#0a84ff;border-radius:2px"></span>陷入山崩地裂</div>
+          <div style="color:#8e8e93;font-size:12px">睁开你的双眼</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;padding:10px 13px 0">
+          <div class="ctrl" style="gap:18px">
+            <svg width="15" height="12" viewBox="0 0 17 14"><path d="M2 1v12M15 1L6 7l9 6z"
+              stroke="#fff" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
+            <span class="main" style="width:28px;height:28px"><svg width="11" height="13" viewBox="0 0 13 15"><path d="M1 1l11 6.5L1 14z"/></svg></span>
+            <svg width="15" height="12" viewBox="0 0 17 14"><path d="M15 1v12M2 1l9 6-9 6z"
+              stroke="#fff" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
+          </div>
+          <div class="vol" style="flex:1">
+            <svg width="13" height="11" viewBox="0 0 13 11" fill="#8e8e93"><path d="M0 3.5h2.6L6 0v11L2.6 7.5H0z"/>
+              <path d="M8.4 3a3.6 3.6 0 0 1 0 5" stroke="#8e8e93" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+            <span class="vtrack"><i></i></span><span>62%</span></div>
+        </div>
+      </div>
+      <div class="cap">单页 · 封面 + 曲目 + 进度 + 3 行歌词 + 控制</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 方案 C 歌词沉浸 ============ -->
+<div class="scheme">
+  <h2>方案 C · 歌词沉浸（Apple Music 全屏歌词）</h2>
+  <p class="note">封面缩到 44×44 角落，歌词占据中央绝大部分，当前句最大最亮、上下句灰度递减（模拟渐隐）。
+    控制交给实体按键，屏上不放按钮，只保留细进度条。最沉浸、最"苹果"，但不看歌词时信息偏少。</p>
+  <div class="row">
+    <div>
+      <div class="screen">
+        <div class="bar"><span>08/09</span><span class="mid">音乐</span>
+          <span class="ic"><span class="batt"><span class="shell"><i class="lv"></i></span><span>82</span></span></span></div>
+        <div style="display:flex;gap:9px;align-items:center;padding:8px 13px 0">
+          <div class="cover" style="width:44px;height:44px;border-radius:7px">
+            <div class="disc" style="width:32px;height:32px"></div>
+          </div>
+          <div style="min-width:0">
+            <div class="title" style="font-size:13px">Bohemian Rhapsody</div>
+            <div class="artist" style="font-size:11px">Queen</div>
+          </div>
+        </div>
+        <div class="lyric" style="padding:14px 16px 0;text-align:left">
+          <div class="ly-far" style="font-size:12px">是真实人生还是幻影</div>
+          <div class="ly-prev" style="font-size:13px;margin-top:6px">陷入山崩地裂</div>
+          <div class="ly-cur blue" style="font-size:18px;margin:7px 0">睁开你的双眼</div>
+          <div class="ly-next" style="font-size:13px">看看天空</div>
+          <div class="ly-far" style="font-size:12px;margin-top:5px">我只是个穷小子</div>
+        </div>
+        <div style="position:absolute;left:13px;right:13px;bottom:14px">
+          <div class="prog"><span>1:24</span>
+            <span class="track"><i></i><b></b></span><span>5:55</span></div>
+        </div>
+      </div>
+      <div class="cap">歌词沉浸 · 当前句系统蓝高亮，上下渐隐</div>
+    </div>
+  </div>
+</div>
+
+<div class="scheme" style="background:#2a2118;border:1px solid #7a5a2a">
+  <h2 style="color:#ffd60a">⚠ 落地前需要确认的两件事</h2>
+  <p class="note" style="color:#d8cbb0">
+    <b>1. 数据来源</b>：当前 <code>BluetoothA2DP</code> 是桩实现（ESP32-S3 无 Bluetooth Classic），封面、歌词、曲目全无真实音源。
+    需选择：① SD 卡放 MP3 + 同名 .lrc + 封面图；② 联网从 API 拉取；③ 先做 UI 骨架用假数据验证布局。<br><br>
+    <b>2. 中文字库</b>：现有字库是按需生成的 87 个汉字，歌词含任意汉字必然大量缺字。
+    需升级为「全量 3500 常用字（约 448KB，4bpp）放 SPIFFS，运行时按需加载字形」。
+    SPIFFS 有 3.4MB 空间，容量充足，但需要改字库架构并单独烧录文件系统镜像。
+  </p>
+</div>
+
+</body>
+</html>
