@@ -4,11 +4,166 @@
 #include "Spectrum.h"
 #include "Input.h"
 #include "WifiProvisioning.h"
+#include "Weather.h"
+#include "MusicService.h"
+#include "AudioPlayer.h"
 #include <esp_system.h>
 #include <esp_sntp.h>
 #include <time.h>
 
 namespace {
+
+bool weatherSnapshotsEqual(const WeatherClass::Snapshot &a,
+                           const WeatherClass::Snapshot &b) {
+    if (a.valid != b.valid || a.tempC != b.tempC || a.icon != b.icon ||
+        a.humidityPct != b.humidityPct || a.windKph != b.windKph ||
+        a.rainChancePct != b.rainChancePct ||
+        a.forecastCount != b.forecastCount ||
+        strcmp(a.condition, b.condition) != 0 || strcmp(a.city, b.city) != 0) {
+        return false;
+    }
+    for (uint8_t i = 0; i < WeatherClass::kForecastDays; i++) {
+        if (a.forecast[i].minC != b.forecast[i].minC ||
+            a.forecast[i].maxC != b.forecast[i].maxC ||
+            a.forecast[i].icon != b.forecast[i].icon) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// 将天气任务的快照同步到显示层（有变化才推送，避免多余重绘）
+void updateWeatherDisplay(bool wifiConnected) {
+    Weather.update(wifiConnected);
+
+    static WeatherClass::Snapshot lastShown;
+    static bool everShown = false;
+    WeatherClass::Snapshot snap;
+    Weather.snapshot(snap);
+
+    const bool changed = !everShown || !weatherSnapshotsEqual(snap, lastShown);
+    if (!changed) return;
+
+    Display.setWeather(snap);
+    lastShown = snap;
+    everShown = true;
+    if (snap.valid) {
+        Serial.printf("[WX] display %dC %s %s icon=%s\n",
+                      (int)snap.tempC, snap.condition, snap.city,
+                      weatherIconName(snap.icon));
+    }
+}
+
+// 音乐服务 → 显示层同步。歌单/歌词由内网 CloudMusic Tools 后端提供，
+// 曲目或歌词变化时才推送给 Display，避免多余重绘。
+void updateMusicDisplay(bool wifiConnected) {
+    MusicService.update(wifiConnected);
+
+    static uint32_t lastTrackId = 0;
+    static uint16_t lastLyricCount = 0xFFFF;
+    static MusicServiceClass::State lastState = MusicServiceClass::State::Idle;
+    static bool lastCoverReady = false;
+    static uint8_t lastIndex = 0xFF;
+
+    const MusicServiceClass::State state = MusicService.state();
+    const uint8_t index = MusicService.currentIndex();
+    const uint16_t lyricCount = MusicService.lyricCount();
+    const bool coverReady = MusicService.coverReady();
+
+    // 切歌瞬间（index 变化）：立即进入加载态，清空旧内容并停止旧音频。
+    // 新歌词/直链/封面由网络任务异步到达，逐个更新到显示层。
+    if (index != lastIndex) {
+        lastIndex = index;
+        Display.setMusicLoading();
+        AudioPlayer.stop();
+        Serial.printf("[NCM] switching to #%u, loading...\n", (unsigned)index);
+    }
+
+    MusicServiceClass::Track track;
+    const bool hasTrack = state == MusicServiceClass::State::Ready &&
+                          MusicService.track(index, track);
+    // 用曲目 ID 而非下标判断变化：漫游续拉新批次后下标同样归 0，
+    // 只看下标会漏掉"换了一批歌但仍在第 0 首"的情况。
+    const uint32_t trackId = hasTrack ? track.id : 0;
+
+    const bool changed = trackId != lastTrackId ||
+                         lyricCount != lastLyricCount ||
+                         state != lastState || coverReady != lastCoverReady;
+    if (!changed) return;
+    lastTrackId = trackId;
+    lastLyricCount = lyricCount;
+    lastState = state;
+    lastCoverReady = coverReady;
+
+    if (hasTrack) {
+        // 封面就绪才传位图，否则传 nullptr 走黑胶占位图
+        const uint16_t *cover = coverReady ? MusicService.coverPixels() : nullptr;
+        const uint16_t coverSize = coverReady ? MusicService.coverSize() : 0;
+        Display.setNowPlaying(track.title, track.artist, track.album,
+                              track.durationMs,
+                              cover, (int16_t)coverSize, (int16_t)coverSize);
+        Serial.printf("[NCM] now playing #%u %s - %s (%u lyric lines, cover=%d)\n",
+                      (unsigned)index, track.title, track.artist,
+                      (unsigned)lyricCount, coverReady ? 1 : 0);
+    } else {
+        const char *tip = state == MusicServiceClass::State::Loading
+                              ? "正在获取歌单"
+                          : state == MusicServiceClass::State::Failed
+                              ? "歌单获取失败"
+                              : "未连接网络";
+        Display.setNowPlaying(tip, "", "", 0);
+    }
+
+    // 歌词整体替换：服务侧是定长数组，这里转成显示层的 LyricLine
+    static DisplayClass::LyricLine lines[MusicServiceClass::kMaxLyrics];
+    const uint16_t count = lyricCount > MusicServiceClass::kMaxLyrics
+                               ? MusicServiceClass::kMaxLyrics : lyricCount;
+    for (uint16_t i = 0; i < count; i++) {
+        MusicServiceClass::LyricLine src;
+        if (!MusicService.lyric(i, src)) break;
+        lines[i].startMs = src.startMs;
+        lines[i].text = src.text;
+    }
+    Display.setLyrics(lines, count);
+}
+
+// 播放链路：拿到新曲目的直链就备妥/开播，进度取解码器的真实位置。
+void updateMusicPlayback() {
+    // 直链检查每 300ms 一次即可：playUrl() 要加锁并拷贝字符串，
+    // 每轮 loop 都调会和音频任务抢锁，拖慢 UI 刷新。
+    static uint32_t lastCheckMs = 0;
+    static String lastUrl;
+    static bool firstTrack = true;   // 开机后的第一首停在暂停态
+
+    const uint32_t now = millis();
+    if (now - lastCheckMs >= 300) {
+        lastCheckMs = now;
+        const String url = MusicService.playUrl();
+        if (url.length() && url != lastUrl) {
+            lastUrl = url;
+            // 直链就绪时一并取格式，供播放器选择解码器（MP3/FLAC）
+            const AudioPlayerClass::PlayFormat fmt = MusicService.playFormat();
+            if (firstTrack) {
+                // 开机/重启后不自动出声，等用户按播放键
+                firstTrack = false;
+                AudioPlayer.prepare(url, fmt);
+                Serial.println("[AUDIO] armed (press play to start)");
+            } else {
+                // 用户主动切歌或上一首播完：接续播放
+                AudioPlayer.play(url, fmt);
+                Serial.printf("[AUDIO] start: %.60s...\n", url.c_str());
+            }
+        }
+
+        // 播放自然结束 → 自动下一首
+        if (AudioPlayer.takeFinishedEvent()) {
+            MusicService.next();
+        }
+    }
+
+    // 进度是 volatile 读取，无锁，可以每轮更新
+    Display.setPlaybackPosition(AudioPlayer.positionMs());
+}
 
 void updateNetworkTime(bool wifiConnected) {
     static bool previousWifiConnected = false;
@@ -107,7 +262,7 @@ void setup() {
     Serial.println();
     Serial.println("=================================");
     Serial.println("[BOOT] ESP32-S3-WROOM-1-N16R8");
-    Serial.println("[BOOT] Welcome page when BT off");
+    Serial.println("[BOOT] Home clock/weather pages rotate when BT is off");
     Serial.println("=================================");
     const esp_reset_reason_t resetReason = esp_reset_reason();
     Serial.printf("[BOOT] reset reason=%d (%s) free heap=%u min heap=%u\n",
@@ -121,6 +276,9 @@ void setup() {
     Input.init();
     Spectrum.init();
     WifiProvisioning.init();
+    Weather.init();
+    MusicService.init();
+    AudioPlayer.init();
     WifiProvisioning.autoConnect();
 
     Serial.println("[BOOT] setup done");
@@ -150,6 +308,8 @@ void loop() {
     WifiProvisioning.update();
     const bool wifiConnected = WifiProvisioning.isStationConnected();
     updateNetworkTime(wifiConnected);
+    updateWeatherDisplay(wifiConnected);
+    updateMusicDisplay(wifiConnected);
     Display.setWifiConnected(wifiConnected);
     Display.setNetworkServiceState(WifiProvisioning.isActive(),
                                     WifiProvisioning.status(),
@@ -161,6 +321,13 @@ void loop() {
     if (BluetoothA2DP.isConnected()) {
         Spectrum.update();
     }
+    // 音乐播放链路常驻运行（切到别的页面也不断音）
+    updateMusicPlayback();
+    if (Display.isMusicPlayer()) {
+        Spectrum.update();
+    }
+    // 听书页请求书籍列表
+    if (Display.takeBookListRequest()) MusicService.requestBookList();
 
     Display.render();
     delay(20);
