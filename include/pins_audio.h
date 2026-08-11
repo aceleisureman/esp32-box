@@ -44,3 +44,32 @@
 
 // 使用的 I2S 外设编号（S3 有 I2S0 / I2S1，取 0）
 #define I2S_PORT_NUM 0
+
+// ---- 语音助手麦克风（INMP441，I2S 数字麦）----
+// 选脚原则（与输出同理）：避开 26–37（Flash/PSRAM）、0/3/45/46（strapping）、
+// 19/20（USB）、43/44（串口）、1/9/10（预留电池 ADC）。故用 41/42/16。
+// 注意：GPIO45 是 strapping 脚，绝不能给麦克风数据线——上电电平会干扰 Flash 电压选择。
+//
+// 接线（INMP441 → ESP32-S3）:
+//   VDD  → 3V3          GND → G
+//   SCK  → GPIO41   位时钟
+//   WS   → GPIO42   字选择（帧同步）
+//   SD   → GPIO16   数据输出
+//   L/R  → GND      接地 = 左声道
+//
+// 录音与功放分别用 I2S1（RX）与 I2S0（TX），两路互不冲突。
+#define PIN_MIC_SCK 41
+#define PIN_MIC_WS  42
+#define PIN_MIC_SD  16
+#define I2S_MIC_PORT_NUM 1
+#define MIC_SAMPLE_RATE 16000
+#define VOICE_OUTPUT_SAMPLE_RATE 24000
+
+// 语音助手后端（局域网 Flask），设备经此上传录音并拉取 TTS 音频
+#define VOICE_SERVER_URL "http://192.168.28.236:8080"
+
+// 实时语音 WebSocket 后端。API Key 只配置在后端，不进入固件。
+// 注意：必须与 VOICE_SERVER_URL 指向同一台后端（统一内网 IP）。
+#define VOICE_WS_HOST "192.168.28.236"
+#define VOICE_WS_PORT 8080
+#define VOICE_WS_PATH "/api/voice/realtime"

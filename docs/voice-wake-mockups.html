@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音唤醒页方案预览</title>
+<style>
+  body{margin:0;padding:32px 24px 64px;background:#1c1f24;color:#e8eaed;
+       font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  h1{font-size:22px;margin:0 0 6px}
+  .sub{color:#9aa3ad;font-size:13px;margin-bottom:8px}
+  .controls{margin-bottom:28px;color:#9aa3ad;font-size:13px}
+  .controls button{background:#2a2f37;border:1px solid #3a4048;color:#e8eaed;
+       border-radius:8px;padding:6px 14px;margin-right:8px;cursor:pointer;font-size:13px}
+  .controls button.active{background:#0a84ff;border-color:#0a84ff;color:#fff}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:24px}
+  .card{padding:18px;border-radius:16px;background:#24282e}
+  .card h2{font-size:15px;margin:0 0 4px}
+  .card .note{color:#9aa3ad;font-size:12px;margin:0 0 12px;line-height:1.7}
+  canvas{width:320px;height:240px;border-radius:10px;background:#000;
+         box-shadow:0 6px 22px #0007;display:block;margin:0 auto;image-rendering:pixelated}
+  .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;
+       background:#0a84ff22;color:#64d2ff;margin-right:6px}
+  .tag.g{background:#30d15822;color:#5ee08a}
+  .tag.o{background:#ff9f0a22;color:#ffb340}
+</style>
+</head>
+<body>
+<h1>语音唤醒页方案（动态预览）</h1>
+<p class="sub">四套方案均按 320×240 实机能力设计。下方按钮可全局同步状态，观察各方案在「空闲→唤醒→聆听→思考→回复→结束」下的表现。</p>
+
+<div class="controls">
+  全局状态：
+  <button data-st="idle" class="active">空闲</button>
+  <button data-st="wake">唤醒</button>
+  <button data-st="listen">聆听</button>
+  <button data-st="think">思考</button>
+  <button data-st="reply">回复</button>
+  <button data-st="done">结束</button>
+</div>
+
+<div class="grid">
+
+<div class="card">
+  <h2>方案 1 · 纯状态指示</h2>
+  <p class="note"><span class="tag">实现成本低</span>不加新页面，只在状态条右侧加语音图标+波形。
+    唤醒反馈弱，但零侵入。适用于「有唤起词但不想打扰用户」的场景。</p>
+  <canvas id="c1" width="320" height="240"></canvas>
+</div>
+
+<div class="card">
+  <h2>方案 2 · 专用对话页（推荐）</h2>
+  <p class="note"><span class="tag g">体验最好</span>唤醒后全屏切到对话页：大波形 + 状态文字 + 回复文字。
+    与现有音乐页/歌词页设计语言一致，反馈最明确。独立 Page 枚举。</p>
+  <canvas id="c2" width="320" height="240"></canvas>
+</div>
+
+<div class="card">
+  <h2>方案 3 · 覆盖层 HUD</h2>
+  <p class="note"><span class="tag o">不打扰</span>唤醒后在当前页面叠加半透明卡片，原内容不消失。
+    适合边看歌词边对话，但小屏上空间局促，需处理下层内容恢复。</p>
+  <canvas id="c3" width="320" height="240"></canvas>
+</div>
+
+<div class="card">
+  <h2>方案 4 · 首页嵌入</h2>
+  <p class="note"><span class="tag">与首页融合</span>首页底部常驻「语音就绪」，唤醒后展开成对话卡。
+    像智能音箱的常驻状态，但非首页时仍需状态条兜底。</p>
+  <canvas id="c4" width="320" height="240"></canvas>
+</div>
+
+</div>
+
+<script>
+// ---- 全局状态机 ----
+const ST = { idle:0, wake:1, listen:2, think:3, reply:4, done:5 };
+let gState = ST.idle;
+
+// 监听全局状态按钮
+document.querySelectorAll('.controls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    gState = ST[btn.dataset.st];
+  });
+});
+
+// ---- 模拟波形数据 ----
+// 每个方案独立维护一个波形缓存，动画时上下滚动
+function makeWave(len){ const a=new Float32Array(len); return a; }
+function tickWave(w, amp, t){
+  for(let i=0;i<w.length;i++){
+    const phase = t*0.13 + i*0.35;
+    w[i] = amp * (Math.sin(phase) * 0.5 + Math.sin(phase*2.3+1.7)*0.3 + Math.sin(phase*0.7+4.2)*0.2);
+  }
+}
+function waveAt(w, i, w0){ // 平滑取 w 的一个窗口，模拟滚动
+  const n = w.length;
+  const idx = Math.floor(i + w0) % n;
+  return w[idx];
+}
+// 归一化到 [-1,1]
+function normWave(w, t){
+  tickWave(w, 1, t);
+  let m=0; for(const v of w){ const a=Math.abs(v); if(a>m)m=a; }
+  m=m||1;
+  const out=new Float32Array(w.length);
+  for(let i=0;i<w.length;i++) out[i]=w[i]/m;
+  return out;
+}
+
+// 颜色（近似 RGB565 值对应的 web 色）
+const C = {
+  bar: '#000000', text:'#ffffff', dim:'#8e8e93', label:'#c7c7cc',
+  accent:'#0a84ff', line:'#38383a', green:'#30d158', card:'#2c2c2e',
+  cardTop:'#3c3c3e', cardEdge:'#545456', panel:'#202022',
+  orange:'#ff9f0a'
+};
+
+// 画布公共：清屏 + 状态条
+function drawStatusBar(ctx, W=320, H=240, opts={}){
+  ctx.fillStyle = C.bar; ctx.fillRect(0,0,W,28);
+  ctx.fillStyle = C.line; ctx.fillRect(0,27,W,1);
+  // 左侧时间
+  ctx.fillStyle = C.text; ctx.font='bold 15px system-ui, sans-serif';
+  ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText('15:34', 8, 15);
+  // 中部
+  if(opts.mid){ ctx.fillStyle=C.text; ctx.font='13px system-ui'; ctx.textAlign='center'; ctx.fillText(opts.mid, W/2, 15); }
+  // 右侧：WiFi + BT + 电池（静态示意）
+  ctx.fillStyle = C.label; ctx.font='11px system-ui'; ctx.textAlign='right';
+  ctx.fillText('▂▄▆', W-60, 15);
+  ctx.fillText('B', W-44, 15);
+  ctx.fillStyle = C.green; ctx.fillRect(W-34, 9, 26, 11);
+  ctx.strokeStyle = C.label; ctx.lineWidth=1; ctx.strokeRect(W-34,9,26,11);
+  ctx.fillRect(W-8, 12, 2, 5);
+}
+
+// 画一个语音图标（16px，在 status bar 内）
+function drawMicIcon(ctx, x, y, color, on){
+  ctx.fillStyle = color;
+  // 胶囊话筒
+  ctx.beginPath(); ctx.roundRect(x, y, 8, 13, 3); ctx.fill();
+  // 支架
+  ctx.fillRect(x-1, y+13, 10, 2);
+  ctx.fillRect(x+3, y+15, 3, 5);
+  // 底座
+  ctx.fillRect(x-2, y+20, 12, 2);
+}
+
+// 画波形条（横向排列的竖条）
+function drawWaveBars(ctx, x0, y0, w, h, amp, t, color, nBars=24){
+  const bars = nBars;
+  const bw = w / bars;
+  const wave = normWave(makeWave(128), t);
+  for(let i=0;i<bars;i++){
+    const v = Math.abs(waveAt(wave, i*(128/bars), 0));
+    const bh = Math.max(1, v * amp * h);
+    ctx.fillStyle = color;
+    ctx.fillRect(x0 + i*bw, y0 + (h-bh)/2, bw-1, bh);
+  }
+}
+
+// ============ 方案 1：纯状态指示 ============
+let c1 = document.getElementById('c1');
+{
+  const ctx = c1.getContext('2d');
+  let t = 0;
+  (function anim(){
+    requestAnimationFrame(anim); t += 1;
+    ctx.clearRect(0,0,320,240);
+    drawStatusBar(ctx, 320,240, {mid:'待机'});
+    // 状态条右侧语音图标 + 波形
+    const micColor = gState===ST.idle ? C.dim : C.accent;
+    drawMicIcon(ctx, 320-52, 3, micColor);
+    if(gState!==ST.idle){
+      const amp = gState===ST.listen ? 1 : (gState===ST.wake?0.5:0.3);
+      drawWaveBars(ctx, 320-40, 5, 32, 17, amp, t, micColor, 10);
+    }
+    // 主区：翻页时钟占位 + 底部一行状态文字
+    ctx.fillStyle = C.text; ctx.font='bold 34px system-ui'; ctx.textAlign='center';
+    ctx.fillText('15:34', 160, 110);
+    ctx.fillStyle = C.dim; ctx.font='12px system-ui';
+    const states = ['语音就绪 · 长按对讲','· 唤醒中','· 聆听中…','· 思考中…','· 回复中…','· 对话结束'];
+    ctx.fillText(states[gState], 160, 200);
+    // 时钟下方的小日期
+    ctx.fillStyle = C.label; ctx.font='13px system-ui'; ctx.fillText('8月11日 星期一', 160, 138);
+  })();
+}
+
+// ============ 方案 2：专用对话页 ============
+let c2 = document.getElementById('c2');
+{
+  const ctx = c2.getContext('2d');
+  let t = 0;
+  (function anim(){
+    requestAnimationFrame(anim); t += 1;
+    ctx.clearRect(0,0,320,240);
+    drawStatusBar(ctx, 320,240, {mid: gState===ST.idle ? '待机' : '语音助手'});
+    const idle = gState===ST.idle;
+    // 空闲：状态条灰图标即可，主区显示提示
+    if(idle){
+      drawMicIcon(ctx, 320-52, 3, C.dim);
+      ctx.fillStyle = C.text; ctx.font='bold 22px system-ui'; ctx.textAlign='center';
+      ctx.fillText('语音助手', 160, 105);
+      ctx.fillStyle = C.dim; ctx.font='13px system-ui';
+      ctx.fillText('长按播放键 或 说唤醒词', 160, 132);
+      ctx.fillStyle = C.accent; ctx.font='12px system-ui';
+      ctx.fillText('↑ 状态条显示就绪', 160, 165);
+      return;
+    }
+    // 唤醒/聆听/思考/回复
+    drawMicIcon(ctx, 320-52, 3, C.accent);
+    // 中央大波形（聆听时最强）
+    const waveAmp = gState===ST.listen ? 1 : (gState===ST.wake?0.5 : gState===ST.reply?0.35:0.15);
+    drawWaveBars(ctx, 40, 80, 240, 60, waveAmp, t, C.accent, 40);
+    // 状态文字
+    const states = ['唤醒中','聆听中…','思考中…','回复中…',''];
+    ctx.fillStyle = C.text; ctx.font='bold 17px system-ui'; ctx.textAlign='center';
+    ctx.fillText(states[gState-1] || '', 160, 165);
+    // 回复文字（回复态显示）
+    if(gState===ST.reply){
+      ctx.fillStyle = C.label; ctx.font='14px system-ui';
+      ctx.fillText('好的，下一首', 160, 195);
+    }
+    // 底部操作提示
+    ctx.fillStyle = C.dim; ctx.font='11px system-ui';
+    ctx.fillText('◀ 返回       ● 结束', 160, 225);
+  })();
+}
+
+// ============ 方案 3：覆盖层 HUD ============
+let c3 = document.getElementById('c3');
+{
+  const ctx = c3.getContext('2d');
+  let t = 0;
+  (function anim(){
+    requestAnimationFrame(anim); t += 1;
+    ctx.clearRect(0,0,320,240);
+    // 下层：假设在「歌词页」，画两行歌词 + 进度
+    drawStatusBar(ctx, 320,240, {mid:'歌词'});
+    ctx.fillStyle = C.text; ctx.font='15px system-ui'; ctx.textAlign='center';
+    ctx.fillText('把回忆剪碎了', 160, 90);
+    ctx.fillStyle = C.accent; ctx.fillText('沿着声线往回走', 160, 118);
+    ctx.fillStyle = C.dim; ctx.fillText('云淡风轻的午后', 160, 146);
+    // 进度条
+    ctx.fillStyle = C.line; ctx.fillRect(30, 185, 260, 3);
+    ctx.fillStyle = C.accent; ctx.fillRect(30, 185, 150, 3);
+    ctx.fillStyle = C.dim; ctx.font='11px system-ui';
+    ctx.textAlign='left'; ctx.fillText('01:23', 30, 200);
+    ctx.textAlign='right'; ctx.fillText('04:10', 290, 200);
+
+    // HUD 覆盖层
+    if(gState!==ST.idle){
+      // 半透明暗化背景
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(0,28,320,212);
+      // 卡片
+      ctx.fillStyle = 'rgba(32,32,34,0.9)';
+      ctx.beginPath(); ctx.roundRect(45, 80, 230, 85, 12); ctx.fill();
+      ctx.strokeStyle = C.cardEdge; ctx.lineWidth=1; ctx.stroke();
+      // 波形
+      const amp = gState===ST.listen ? 1 : (gState===ST.wake?0.5 : 0.3);
+      drawWaveBars(ctx, 60, 95, 200, 26, amp, t, C.accent, 24);
+      const states = ['唤醒中','聆听中…','思考中…','回复中…',''];
+      ctx.fillStyle = C.text; ctx.font='bold 14px system-ui'; ctx.textAlign='center';
+      ctx.fillText(states[gState-1] || '', 160, 135);
+      if(gState===ST.reply){
+        ctx.fillStyle = C.label; ctx.font='12px system-ui'; ctx.fillText('好的，下一首', 160, 153);
+      }
+    } else {
+      drawMicIcon(ctx, 320-52, 3, C.dim);
+    }
+  })();
+}
+
+// ============ 方案 4：首页嵌入 ============
+let c4 = document.getElementById('c4');
+{
+  const ctx = c4.getContext('2d');
+  let t = 0;
+  (function anim(){
+    requestAnimationFrame(anim); t += 1;
+    ctx.clearRect(0,0,320,240);
+    drawStatusBar(ctx, 320,240, {mid:'首页'});
+    // 首页翻页时钟
+    ctx.fillStyle = C.text; ctx.font='bold 40px system-ui'; ctx.textAlign='center';
+    ctx.fillText('15:34', 160, 95);
+    ctx.fillStyle = C.label; ctx.font='13px system-ui'; ctx.fillText('8月11日', 160, 122);
+
+    if(gState===ST.idle){
+      // 常驻底部：语音就绪一行
+      ctx.fillStyle = C.panel;
+      ctx.beginPath(); ctx.roundRect(20, 185, 280, 34, 10); ctx.fill();
+      drawMicIcon(ctx, 34, 192, C.dim);
+      ctx.fillStyle = C.dim; ctx.font='12px system-ui'; ctx.textAlign='left';
+      ctx.fillText('语音就绪 · 说「你好小盒」', 52, 205);
+      drawWaveBars(ctx, 255, 193, 36, 18, 0.2, t, C.dim, 8);
+    } else {
+      // 底部对话卡展开
+      ctx.fillStyle = C.panel;
+      ctx.beginPath(); ctx.roundRect(20, 160, 280, 62, 12); ctx.fill();
+      ctx.strokeStyle = C.cardEdge; ctx.lineWidth=1; ctx.stroke();
+      const amp = gState===ST.listen ? 1 : (gState===ST.wake?0.5 : 0.3);
+      drawWaveBars(ctx, 34, 172, 110, 26, amp, t, C.accent, 14);
+      const states = ['唤醒中','聆听中…','思考中…','回复中…',''];
+      ctx.fillStyle = C.text; ctx.font='bold 13px system-ui'; ctx.textAlign='left';
+      ctx.fillText(states[gState-1] || '', 34, 210);
+      if(gState===ST.reply){
+        ctx.fillStyle = C.label; ctx.font='12px system-ui';
+        ctx.fillText('好的，下一首', 34, 208);
+      }
+    }
+  })();
+}
+</script>
+</body>
+</html>
