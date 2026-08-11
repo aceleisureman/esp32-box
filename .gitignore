@@ -3,3 +3,21 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# 语音助手后端：密钥与运行时产物不入库
+server/.env
+server/.venv/
+server/tts_cache/
+__pycache__/
+*.py[cod]
+# 各设备的对话记忆含用户隐私，不入库
+server/memory/
+# 字库生成脚本的虚拟环境
+.venv/
+
+# IDF 组件管理器按 dependencies.lock 自动拉取，不入库
+managed_components/
+# esp-sr 构建时从 components/esp-sr/model 复制生成的模型分区内容
+target/
+# 会话运行时状态（pid 文件等）
+.superpowers/

@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PlatformIO: 编译 ESP32",
+      "type": "shell",
+      "command": "/Users/leisureman/.platformio/penv/bin/pio run -e esp32-s3-st7789",
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": "$gcc"
+    },
+    {
+      "label": "后端: 运行协议检查",
+      "type": "shell",
+      "command": "${workspaceFolder}/.venv/bin/python -m py_compile app.py realtime.py voice.py",
+      "options": {"cwd": "${workspaceFolder}/server"},
+      "problemMatcher": "$python"
+    }
+  ]
+}

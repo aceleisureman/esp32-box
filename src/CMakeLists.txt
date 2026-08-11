@@ -3,4 +3,5 @@
 
 FILE(GLOB_RECURSE app_sources ${CMAKE_SOURCE_DIR}/src/*.*)
 
-idf_component_register(SRCS ${app_sources} REQUIRES bt)
+# PlatformIO 将 Arduino 核心注册为 framework-arduinoespressif32 组件。
+idf_component_register(SRCS ${app_sources} REQUIRES framework-arduinoespressif32 bt esp-sr)
