@@ -2,6 +2,7 @@
 #include "BluetoothA2DP.h"
 #include "Display.h"
 #include "AudioPlayer.h"
+#include "VoiceAssistant.h"
 
 InputClass Input;
 
@@ -168,11 +169,43 @@ void InputClass::update() {
     _joyDirection = direction;
 #endif
 
-    // ---- 功能键：配网页里复用为导航键，其余场合控制音频播放 ----
-    scan(_play, kSingleShot, []() {
-        if (Display.isNetworkSettings()) Display.networkActivate();
-        else AudioPlayer.togglePause();
-    });
+    // ---- 播放键：手动处理，区分短按与长按 ----
+    // 不能复用 scan 的「按下即触发」：长按录音会在按下瞬间先误触一次
+    // 播放/暂停。改为松开时判定——按住 <800ms 视为短按，>=800ms 视为
+    // 语音录音（进入录音后松开才结束并上传）。
+    {
+        const bool raw = digitalRead(PIN_PLAY) == LOW;
+        const uint32_t now = millis();
+
+        if (raw != _playHolding) {
+            _playHolding = raw;
+            _playHoldMs = now;
+            if (raw) {
+                // 按下：记录背光是否本为亮（背光熄灭时任何键只唤醒不动作）
+                _playWakeOnly = !Display.isBacklightOn();
+                Display.noteActivity();
+            } else {
+                // 松开：判定短按 or 结束录音
+                const uint32_t held = now - _playHoldMs;
+                if (held < kVoiceHoldMs && !_playWakeOnly) {
+                    if (Display.isNetworkSettings()) Display.networkActivate();
+                    else if (Display.isVoicePage()) VoiceAssistant.disableAndRestoreMusic();
+                    else AudioPlayer.togglePause();
+                }
+                _playHoldMs = 0;
+            }
+        }
+
+        // 长按计时：切换连续语音助手，松开不结束会话。
+        if (raw && !_voiceStarted && !_playWakeOnly &&
+            !Display.isNetworkSettings() &&
+            now - _playHoldMs >= kVoiceHoldMs) {
+            _voiceStarted = true;
+            VoiceAssistant.toggleEnabled();
+        }
+        if (!raw) _voiceStarted = false;
+    }
+
     scan(_volUp, kRepeatable, []() {
         if (Display.isNetworkSettings()) Display.networkMove(-1);
         else AudioPlayer.volumeUp();

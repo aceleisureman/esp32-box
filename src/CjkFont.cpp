@@ -16,7 +16,7 @@ bool CjkFontClass::begin() {
     if (_ready) return true;
 
     // 两个字库实例都会调用；SPIFFS.begin 重复调用是安全的
-    if (!SPIFFS.begin(false)) {
+    if (!SPIFFS.begin(false, "/spiffs", 10, "spiffs")) {
         Serial.println("[FONT] SPIFFS mount failed; run: pio run -t uploadfs");
         return false;
     }

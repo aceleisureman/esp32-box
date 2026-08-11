@@ -50,6 +50,12 @@ private:
     static constexpr uint32_t kDebounceMs    = 20;
     static constexpr uint32_t kRepeatDelayMs = 450;
     static constexpr uint32_t kRepeatRateMs  = 140;
+    // 播放键长按切换连续语音助手的阈值
+    static constexpr uint32_t kVoiceHoldMs   = 800;
+    bool _playHolding = false;
+    uint32_t _playHoldMs = 0;
+    bool _voiceStarted = false;
+    bool _playWakeOnly = false;   // 按下播放键时背光本就熄灭（仅唤醒）
 };
 
 extern InputClass Input;

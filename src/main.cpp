@@ -7,6 +7,8 @@
 #include "Weather.h"
 #include "MusicService.h"
 #include "AudioPlayer.h"
+#include "VoiceAssistant.h"
+#include "WakeWord.h"
 #include <esp_system.h>
 #include <esp_sntp.h>
 #include <time.h>
@@ -107,7 +109,7 @@ void updateMusicDisplay(bool wifiConnected) {
                       (unsigned)lyricCount, coverReady ? 1 : 0);
     } else {
         const char *tip = state == MusicServiceClass::State::Loading
-                              ? "正在获取歌单"
+                              ? "Loading..."
                           : state == MusicServiceClass::State::Failed
                               ? "歌单获取失败"
                               : "未连接网络";
@@ -133,7 +135,31 @@ void updateMusicPlayback() {
     // 每轮 loop 都调会和音频任务抢锁，拖慢 UI 刷新。
     static uint32_t lastCheckMs = 0;
     static String lastUrl;
-    static bool firstTrack = true;   // 开机后的第一首停在暂停态
+    // 开机停在备妥态，进入音乐页后才自动出声——上电即响太突兀，
+    // 而进了播放页就是明确的收听意图，不该再等一次按键。
+    static bool autoPlay = false;
+
+    // 语音控制在确认回复播完后转交播放权。
+    if (VoiceAssistant.takeMusicPlayRequest()) {
+        autoPlay = true;
+        const String url = MusicService.playUrl();
+        if (url.length()) {
+            AudioPlayer.play(url, MusicService.playFormat());
+            lastUrl = url;
+            Serial.println("[AUDIO] started by voice command");
+        }
+    }
+
+    // 进入音乐页：立刻播。直链还没到就先置位，等它到达时直接开播。
+    if (Display.takeMusicEnterRequest() && !autoPlay) {
+        autoPlay = true;
+        const String url = MusicService.playUrl();
+        if (url.length() && !VoiceAssistant.enabled()) {
+            AudioPlayer.play(url, MusicService.playFormat());
+            lastUrl = url;
+            Serial.println("[AUDIO] auto-play on entering music page");
+        }
+    }
 
     const uint32_t now = millis();
     if (now - lastCheckMs >= 300) {
@@ -143,15 +169,18 @@ void updateMusicPlayback() {
             lastUrl = url;
             // 直链就绪时一并取格式，供播放器选择解码器（MP3/FLAC）
             const AudioPlayerClass::PlayFormat fmt = MusicService.playFormat();
-            if (firstTrack) {
-                // 开机/重启后不自动出声，等用户按播放键
-                firstTrack = false;
-                AudioPlayer.prepare(url, fmt);
-                Serial.println("[AUDIO] armed (press play to start)");
-            } else {
-                // 用户主动切歌或上一首播完：接续播放
+            if (VoiceAssistant.enabled()) {
+                AudioPlayer.cancelPending();
+                Serial.println("[AUDIO] ignored while voice assistant is active");
+            } else if (autoPlay && !AudioPlayer.isPromptActive()) {
+                // 已进过音乐页：切歌 / 播完续曲 / 进页时直链刚到，都直接播
                 AudioPlayer.play(url, fmt);
                 Serial.printf("[AUDIO] start: %.60s...\n", url.c_str());
+            } else {
+                // 还没进过音乐页，或当前在播 TTS 提示音：先备妥/缓着，
+                // 提示音播完后再接续
+                AudioPlayer.prepare(url, fmt);
+                Serial.println("[AUDIO] armed (prompt or not-yet-open)");
             }
         }
 
@@ -279,6 +308,8 @@ void setup() {
     Weather.init();
     MusicService.init();
     AudioPlayer.init();
+    VoiceAssistant.init();
+    WakeWord.init();
     WifiProvisioning.autoConnect();
 
     Serial.println("[BOOT] setup done");
@@ -287,6 +318,20 @@ void setup() {
 void loop() {
     BluetoothA2DP.update();
     Input.update();
+    VoiceAssistant.update();
+    WakeWord.update();
+
+    // 语音会话激活 → 自动进入对话页；结束 → 自动退出
+    if (VoiceAssistant.enabled()) {
+        if (!Display.isVoicePage()) {
+            Display.showVoicePage(true);
+        } else {
+            Display.updateVoicePage(false);
+        }
+    } else if (Display.isVoicePage()) {
+        // 会话结束：回到首页（欢迎页即主页）
+        Display.showHome();
+    }
 
     static bool networkPage = false;
     const bool networkPageNow = Display.isNetworkSettings();

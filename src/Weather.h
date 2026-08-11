@@ -66,6 +66,7 @@ private:
     TaskHandle_t      _task       = nullptr;
     volatile bool     _wifiUp     = false;
     volatile bool     _forceRefresh = false;
+    volatile uint32_t _wifiConnectedAtMs = 0;
 
     // 仅天气任务内部访问
     bool   _located = false;
@@ -85,7 +86,9 @@ private:
     Snapshot _shared;
 
     static constexpr uint32_t kRefreshMs    = 10UL * 60UL * 1000UL;  // 正常刷新周期
-    static constexpr uint32_t kRetryMs      = 60UL * 1000UL;         // 失败重试周期
+    static constexpr uint32_t kInitialDelayMs = 6000;                 // 联网后错开音乐/TLS 初始化
+    static constexpr uint32_t kRetryInitialMs = 15UL * 1000UL;
+    static constexpr uint32_t kRetryMaxMs     = 5UL * 60UL * 1000UL;
     static constexpr uint32_t kHttpTimeout  = 8000;
 };
 

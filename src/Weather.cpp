@@ -1,9 +1,11 @@
 #include "Weather.h"
+#include "VoiceAssistant.h"
 
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,6 +125,11 @@ bool httpGet(const char *url, bool secure, String &body) {
     WiFiClientSecure tlsClient;
     WiFiClient plainClient;
     if (secure) {
+        Serial.printf(
+            "[WX] TLS before internal=%u largest=%u psram=%u\n",
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+            (unsigned)ESP.getFreePsram());
         // 天气/定位为公开只读数据，不校验证书以省去证书维护
         tlsClient.setInsecure();
         tlsClient.setTimeout(8);
@@ -141,7 +148,11 @@ bool httpGet(const char *url, bool secure, String &body) {
     http.useHTTP10(true);
     const int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[WX] GET %s -> %d\n", url, code);
+        Serial.printf(
+            "[WX] GET failed code=%d internal=%u largest=%u\n",
+            code,
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         http.end();
         return false;
     }
@@ -172,8 +183,12 @@ const char *weatherIconName(WeatherIcon icon) {
 void WeatherClass::init() {
     if (_lock) return;
     _lock = xSemaphoreCreateMutex();
-    xTaskCreatePinnedToCore(&WeatherClass::taskEntry, "weather", 6144, this,
-                            2, &_task, 0);
+    if (!_lock || xTaskCreatePinnedToCore(&WeatherClass::taskEntry, "weather",
+                                          6144, this, 2, &_task, 0) != pdPASS) {
+        _task = nullptr;
+        Serial.println("[WX] task creation failed");
+        return;
+    }
     Serial.println("[WX] weather task started");
 }
 
@@ -181,11 +196,11 @@ void WeatherClass::update(bool wifiConnected) {
     if (wifiConnected != _wifiUp) {
         _wifiUp = wifiConnected;
         if (wifiConnected) {
+            _wifiConnectedAtMs = millis();
             _forceRefresh = true;
         } else {
-            // 断网时保留上次读数，但标记为过期由 UI 灰显
+            // 换网络后出口位置可能变化；天气快照仍保留，避免页面闪回空状态。
             _located = false;
-            publish(false);
         }
     }
 }
@@ -226,6 +241,7 @@ void WeatherClass::taskEntry(void *arg) {
 
 void WeatherClass::taskLoop() {
     uint32_t nextFetchMs = 0;
+    uint32_t retryMs = kRetryInitialMs;
 
     for (;;) {
         const bool wifiUp = _wifiUp;
@@ -235,20 +251,47 @@ void WeatherClass::taskLoop() {
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
+        const uint32_t connectedAt = _wifiConnectedAtMs;
+        if ((uint32_t)(now - connectedAt) < kInitialDelayMs) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
         if (!_forceRefresh && (int32_t)(now - nextFetchMs) < 0) {
             vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        if (VoiceAssistant.enabled()) {
+            // Realtime 建链和天气 HTTPS 都需要较大的连续内部堆。语音优先，
+            // 避免再次出现 mbedTLS memory allocation failed。
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
         }
         _forceRefresh = false;
 
         bool ok = _located || fetchLocation();
         if (ok) ok = fetchWeather();
-        publish(ok);
+        if (ok) {
+            publish(true);
+            retryMs = kRetryInitialMs;
+        } else {
+            // 短暂网络/TLS 失败时继续显示上次成功数据。
+            WeatherClass::Snapshot current;
+            snapshot(current);
+            if (!current.valid) publish(false);
+        }
 
-        nextFetchMs = millis() + (ok ? kRefreshMs : kRetryMs);
+        const uint32_t delayMs = ok ? kRefreshMs : retryMs;
+        nextFetchMs = millis() + delayMs;
         Serial.printf("[WX] fetch %s next in %lus\n",
                       ok ? "ok" : "failed",
-                      (unsigned long)((ok ? kRefreshMs : kRetryMs) / 1000));
+                      (unsigned long)(delayMs / 1000));
+        Serial.printf("[WX] task stack free=%u internal-largest=%u\n",
+                      (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+        if (!ok && retryMs < kRetryMaxMs) {
+            const uint32_t doubled = retryMs * (uint32_t)2;
+            retryMs = doubled < kRetryMaxMs ? doubled : kRetryMaxMs;
+        }
     }
 }
 
@@ -296,8 +339,6 @@ bool WeatherClass::fetchWeather() {
 
     String body;
     if (!httpGet(url, true, body)) {
-        // 定位可能已失效（换网络/换出口），下轮重新定位
-        _located = false;
         return false;
     }
 
@@ -376,4 +417,3 @@ bool WeatherClass::fetchWeather() {
         (int)lroundf(code), isDay > 0.5f);
     return true;
 }
-

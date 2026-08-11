@@ -3,6 +3,7 @@
 #include "WifiProvisioning.h"
 #include "MusicService.h"
 #include "AudioPlayer.h"
+#include "VoiceAssistant.h"
 #include "pins_display.h"
 #include "CjkFont.h"
 
@@ -904,6 +905,16 @@ void DisplayClass::handleJoystick(JoystickEvent event) {
         return;
     }
 
+    if (_page == Page::Voice) {
+        // 语音对话页：左/右键或按下都退出会话
+        if (event == JoystickEvent::Left ||
+            event == JoystickEvent::Right ||
+            event == JoystickEvent::Press) {
+            VoiceAssistant.disableAndRestoreMusic();
+        }
+        return;
+    }
+
     if (_page == Page::NeteaseCloud) {
         if (event == JoystickEvent::Left) showMenu(true);
         return;
@@ -1781,7 +1792,7 @@ void DisplayClass::drawFlipClock(bool force) {
     constexpr int16_t y0 = kFlipClockY;
     const int16_t x0 = (kScrW - kFlipTotalW) / 2;
 
-    char dig[7];
+    char dig[12];
     snprintf(dig, sizeof(dig), "%02u%02u%02u", _clockH, _clockM, _clockS);
 
     const bool first = force || (_lastFlipH == 0xFF);
@@ -3220,11 +3231,11 @@ void DisplayClass::drawMusicProgress(int16_t y, bool force) {
     constexpr int16_t right = kScrW - 13;
     constexpr int16_t barH = 4;
 
-    char cur[8];
+    char cur[12];
     snprintf(cur, sizeof(cur), "%u:%02u",
              (unsigned)(sec / 60), (unsigned)(sec % 60));
     const uint32_t dsec = _musicDurationMs / 1000;
-    char total[8];
+    char total[12];
     snprintf(total, sizeof(total), "%u:%02u",
              (unsigned)(dsec / 60), (unsigned)(dsec % 60));
     const int16_t curW = measureTextWidth(cur, 1);
@@ -3337,7 +3348,7 @@ void DisplayClass::drawMusicNowPlaying(bool force) {
         drawMusicCover(coverX, coverY, coverBox);
 
         const char *title = _musicTitle.length() ? _musicTitle.c_str()
-                             : (_musicLoading ? "正在加载..." : "未在播放");
+                             : (_musicLoading ? "Loading..." : "未在播放");
         drawCjkTextClipped(infoX, coverY + 6, title, 1, COLOR_TEXT, COLOR_BG,
                            infoW);
         if (_musicArtist.length()) {
@@ -3402,7 +3413,7 @@ void DisplayClass::drawMusicLyrics(bool force) {
     }
 
     if (!_musicLyricCount) {
-        const char *tip = _musicLoading ? "正在加载歌词..." : "暂无歌词";
+        const char *tip = _musicLoading ? "Loading..." : "暂无歌词";
         const int16_t w = measureCjkText(tip, 1);
         tft.fillRect(0, 100, kScrW, 22, COLOR_BG);
         drawCjkText((kScrW - w) / 2, 102, tip, 1, COLOR_DIM, COLOR_BG);
@@ -3470,7 +3481,7 @@ void DisplayClass::drawMusicSpectrum(bool force) {
     if (full) {
         tft.fillRect(0, STATUS_H + 1, kScrW, 240 - STATUS_H - 1, COLOR_BG);
         const char *title = _musicTitle.length() ? _musicTitle.c_str()
-                             : (_musicLoading ? "正在加载..." : "未在播放");
+                             : (_musicLoading ? "Loading..." : "未在播放");
         drawCjkTextClipped(13, 34, title, 1, COLOR_TEXT, COLOR_BG, kScrW - 26);
         if (_musicArtist.length()) {
             drawCjkTextClipped(13, 52, _musicArtist.c_str(), 1, COLOR_LABEL,
@@ -3610,6 +3621,7 @@ void DisplayClass::showMusicView(MusicView view, bool force) {
 
 void DisplayClass::showMusicPlayer(bool force) {
     if (!force && _page == Page::Music) return;
+    const bool entering = _page != Page::Music;
     _page = Page::Music;
     _musicView = MusicView::NowPlaying;
     _musicChromeDirty = true;
@@ -3617,10 +3629,120 @@ void DisplayClass::showMusicPlayer(bool force) {
     _lastProgressSec = 0xFFFFFFFF;
     _lastMusicState = (PlayerState)0xFF;
     _lastMusicVol = 0xFF;
+    // 从别的页面进来才请求自动播放；页内强制重绘不应打断当前播放
+    if (entering) _musicEnterRequested = true;
 
     fillScreenBg();
     drawStatusBar(true);
     updateMusicPlayer(true);
+}
+
+bool DisplayClass::takeMusicEnterRequest() {
+    if (!_musicEnterRequested) return false;
+    _musicEnterRequested = false;
+    return true;
+}
+
+// ---------- 语音助手对话页（方案2 全屏） ----------
+// 会话激活（唤醒词/长按）时由 main 调用进入，状态驱动刷新：
+//   Listening/UserSpeaking → 波形 + "聆听中"
+//   Waiting                → 菊花 + "思考中"
+//   Playing                → 波形 + 回复文字
+//   Error/Disconnected     → 错误提示
+// 左键/播放键退出会话（main 层处理）。
+void DisplayClass::showVoicePage(bool force) {
+    if (!force && _page == Page::Voice) return;
+    _page = Page::Voice;
+    fillScreenBg();
+    drawStatusBar(true);
+    updateVoicePage(true);
+}
+
+void DisplayClass::showHome() {
+    // 语音会话结束回首页：欢迎页即主页（私有 showWelcome 的公开入口）
+    showWelcome(true);
+}
+
+void DisplayClass::updateVoicePage(bool force) {
+    if (_page != Page::Voice) return;
+
+    const auto st = VoiceAssistant.state();
+    const uint32_t now = millis();
+
+    // 状态文字：只在变化时重绘（避免整行反复擦写）
+    const char *statusText = "语音助手";
+    switch (st) {
+        case VoiceAssistantClass::State::Listening:
+        case VoiceAssistantClass::State::UserSpeaking:
+            statusText = "聆听中";
+            break;
+        case VoiceAssistantClass::State::Waiting:
+            statusText = "思考中";
+            break;
+        case VoiceAssistantClass::State::Playing:
+            statusText = "回复中";
+            break;
+        case VoiceAssistantClass::State::Connecting:
+        case VoiceAssistantClass::State::Disconnected:
+            statusText = "连接中";
+            break;
+        case VoiceAssistantClass::State::Error:
+            statusText = "出错了";
+            break;
+        default:
+            break;
+    }
+    static const char *lastStatus = nullptr;
+    if (force || lastStatus != statusText) {
+        lastStatus = statusText;
+        // 只清这一行所在的条带再重画
+        tft.fillRect(0, 148, kScrW, 30, COLOR_BG);
+        const int16_t tw = measureCjkText(statusText, 2);
+        drawCjkText((kScrW - tw) / 2, 150, statusText, 2, COLOR_TEXT,
+                    COLOR_BG);
+    }
+
+    // 波形区域：仅重画窄条带（约 70px 高），不清整屏
+    constexpr int16_t waveTop = 76;
+    constexpr int16_t waveH   = 56;
+    tft.fillRect(0, waveTop, kScrW, waveH, COLOR_BG);
+
+    bool showWave = (st == VoiceAssistantClass::State::Listening ||
+                     st == VoiceAssistantClass::State::UserSpeaking ||
+                     st == VoiceAssistantClass::State::Playing);
+    if (showWave) {
+        const auto &levels = Spectrum.getLevels();
+        constexpr int16_t cy = waveTop + waveH / 2;
+        constexpr int16_t barW = 8;
+        constexpr int16_t gap = 3;
+        constexpr int16_t totalW = 24 * (barW + gap) - gap;
+        const int16_t x0 = (kScrW - totalW) / 2;
+        for (uint8_t i = 0; i < 24 && i < levels.size(); i++) {
+            uint16_t h = (uint16_t)(levels[i] * 2);
+            if (h > waveH - 4) h = waveH - 4;
+            tft.fillRect(x0 + i * (barW + gap), cy - h / 2, barW, h,
+                         COLOR_ACCENT);
+        }
+        tft.fillRect(x0, cy, totalW, 1, COLOR_LINE);
+    } else {
+        // 连接/思考：居中菊花，仅 12 点增量重涂
+        drawMusicLoadingSpinner(kScrW / 2, waveTop + waveH / 2, 22,
+                                (uint8_t)(now / 90 % 12));
+    }
+
+    // 用户实时说话内容（transcript.user 事件驱动），只在内容变化时重绘
+    const char *userText = VoiceAssistant.lastUserText();
+    if (userText) {
+        static const char *lastText = nullptr;
+        if (force || lastText != userText) {
+            lastText = userText;
+            tft.fillRect(0, 180, kScrW, 26, COLOR_BG);
+            const int16_t tw2 = measureCjkText(userText, 1);
+            const int16_t x = tw2 < kScrW - 24 ? (kScrW - tw2) / 2 : 12;
+            drawCjkTextClipped(x, 182, userText, 1, COLOR_LABEL, COLOR_BG,
+                               kScrW - 24);
+        }
+    }
 }
 
 void DisplayClass::updateMusicPlayer(bool force) {
@@ -4298,6 +4420,12 @@ void DisplayClass::render() {
         drawStatusBar(false);
         if (_page == Page::Menu) updateMenu(false);
         else if (_page == Page::Settings) updateSettingsPage(false);
+        return;
+    }
+
+    if (_page == Page::Voice) {
+        if (!_blOn) return;
+        updateVoicePage(false);
         return;
     }
 

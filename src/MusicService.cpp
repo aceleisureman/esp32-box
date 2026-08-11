@@ -346,8 +346,12 @@ void MusicServiceClass::init() {
     _lock = xSemaphoreCreateMutex();
     // 20KB 栈：HTTPS（mbedTLS 握手）+ JSON 解析 + JPEG 封面解码调用链
     // 都在这一个任务里叠加；栈给足避免 Stack canary 溢出重启。
-    xTaskCreatePinnedToCore(&MusicServiceClass::taskEntry, "ncm", 20480, this,
-                            2, &_task, 0);
+    if (!_lock || xTaskCreatePinnedToCore(&MusicServiceClass::taskEntry, "ncm",
+                                          20480, this, 2, &_task, 0) != pdPASS) {
+        _task = nullptr;
+        Serial.println("[NCM] task creation failed");
+        return;
+    }
     Serial.println("[NCM] music service task started");
 }
 

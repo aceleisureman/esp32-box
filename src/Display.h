@@ -57,11 +57,21 @@ public:
     void setLyrics(const LyricLine *lines, uint16_t count);
     void showMusicPlayer(bool force);
     bool isMusicPlayer() const { return _page == Page::Music; }
+    // 进入音乐页的一次性事件（读取后清除），供 main 触发自动播放
+    bool takeMusicEnterRequest();
+
+    // ---- 语音助手对话页 ----
+    // 会话激活时自动进入，结束自动退出；强制进入用于手动展示
+    void showVoicePage(bool force);
+    bool isVoicePage() const { return _page == Page::Voice; }
+    void updateVoicePage(bool force);
+    // 返回首页（欢迎页即主页），供 main 在语音会话结束时调用
+    void showHome();
 
 private:
     enum class Page : uint8_t {
         None, Welcome, Player, Menu, Settings, Version, Network, NeteaseCloud,
-        Music, WifiList, Books
+        Music, WifiList, Books, Voice
     };
     enum class HomeView : uint8_t { Clock = 0, Weather = 1 };
     // 音乐播放器三个子页，摇杆左右切换
@@ -237,6 +247,8 @@ private:
     bool      _musicChromeDirty = true;
     // 曲目加载中（切歌过渡态，歌词/直链尚未就绪）
     bool      _musicLoading = false;
+    // 进入音乐页事件：置位后由 main 取走并触发自动播放
+    bool      _musicEnterRequested = false;
     // 歌词五行上一帧的文本指针，用于跳过未变化的行（局部刷新）
     const char *_lyricRowCache[5] = {nullptr};
 

@@ -6,8 +6,10 @@
 
 #include <AudioFileSourceHTTPStream.h>
 #include <AudioFileSourceBuffer.h>
+#include <AudioFileSourcePROGMEM.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioGeneratorFLAC.h>
+#include <AudioGeneratorWAV.h>
 #include <AudioOutputI2S.h>
 #include <driver/i2s.h>
 
@@ -74,6 +76,68 @@ AudioOutputI2S             *gOut    = nullptr;
 // 流缓冲放 PSRAM：从内部 SRAM 抠会加剧堆压力与碎片
 uint8_t                    *gBufMem = nullptr;
 
+// 本地提示音（"叮"）：init 时在 PSRAM 合成一次，后续反复用。
+// 一个带指数衰减包络的 880Hz 正弦，约 200ms，16kHz 16bit 单声道 WAV。
+uint8_t                    *gBeepWav = nullptr;
+uint32_t                    gBeepWavLen = 0;
+// 提示音的内存源：与 gStream/gBuffer 独立，closeStream 一并释放
+AudioFileSourcePROGMEM     *gBeepSource = nullptr;
+
+// Realtime API 常会以高于播放速度下发 24kHz PCM。
+// 512KB 可容纳约 10.9 秒单声道 PCM16，避免回复尚未播完就溢出中止。
+constexpr size_t kPcmBufferBytes = 512 * 1024;
+constexpr uint32_t kPcmPrebufferMs = 100;
+uint8_t *gPcmBuffer = nullptr;
+volatile size_t gPcmRead = 0;
+volatile size_t gPcmWrite = 0;
+volatile uint32_t gPcmGeneration = 0;
+volatile uint32_t gPcmSampleRate = 24000;
+volatile bool gPcmPrimed = false;
+uint32_t gPcmBackpressure = 0;
+uint32_t gPcmUnderflows = 0;
+bool gPcmStarved = false;
+portMUX_TYPE gPcmMux = portMUX_INITIALIZER_UNLOCKED;
+
+size_t pcmUsed() {
+    const size_t read = gPcmRead;
+    const size_t write = gPcmWrite;
+    return write >= read ? write - read : kPcmBufferBytes - read + write;
+}
+
+void buildBeepWav() {
+    constexpr uint32_t kSampleRate = 16000;
+    constexpr float    kFreq = 880.0f;
+    constexpr float    kDurS = 0.20f;
+    constexpr uint32_t kSamples = (uint32_t)(kSampleRate * kDurS);
+    const uint32_t dataLen = kSamples * 2;
+    const uint32_t wavLen = 44 + dataLen;
+    uint8_t *wav = (uint8_t *)ps_malloc(wavLen);
+    if (!wav) return;
+
+    uint8_t *p = wav;
+    auto put = [&p](uint32_t v, uint8_t n) {
+        for (uint8_t i = 0; i < n; i++) *p++ = (uint8_t)(v >> (8 * i));
+    };
+    auto putStr = [&p](const char *s) {
+        while (*s) *p++ = (uint8_t)*s++;
+    };
+    putStr("RIFF");      put(wavLen - 8, 4);
+    putStr("WAVEfmt ");  put(16, 4); put(1, 2); put(1, 2);
+    put(kSampleRate, 4); put(kSampleRate * 2, 4); put(2, 2); put(16, 2);
+    putStr("data");      put(dataLen, 4);
+
+    for (uint32_t i = 0; i < kSamples; i++) {
+        const float t = (float)i / kSampleRate;
+        const float env = expf(-5.0f * t / kDurS);      // 指数衰减
+        const float v = sinf(2.0f * (float)M_PI * kFreq * t) * env * 0.8f;
+        const int16_t s = (int16_t)(v * 32767.0f);
+        *p++ = (uint8_t)(s & 0xff);
+        *p++ = (uint8_t)((uint16_t)s >> 8);
+    }
+    gBeepWav = wav;
+    gBeepWavLen = wavLen;
+}
+
 }  // namespace
 
 void AudioPlayerClass::init() {
@@ -96,17 +160,25 @@ void AudioPlayerClass::init() {
     gOut->SetPinout(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DOUT);
     gOut->SetOutputModeMono(true);           // MAX98357A 是单声道
     gOut->SetBitsPerSample(16);
+    _gainPercent = _volume;
     gOut->SetGain((float)_volume * 0.9f / 100.0f);
     // 开机即安装 I2S 驱动并终身常驻：引脚从上电起就被持续驱动
     // （时钟 + 零数据），待机不悬空、不拾噪。配合上面的 stop()
     // 覆写，任何时刻功放收到的都是合法 I2S 信号。
     gOut->begin();
 
+    // 语音助手的提示音：PSRAM 里合成一次，反复可用
+    buildBeepWav();
+
     // 解码任务放 core 0：Arduino loop（UI 刷新）固定跑在 core 1，
     // 分核可避免解码把 UI 挤掉。优先级取 2，高于网络任务但低于系统关键任务。
     // 10KB 栈：libFLAC 每帧解码调用链比 libmad 更深，留足余量。
-    xTaskCreatePinnedToCore(&AudioPlayerClass::taskEntry, "audio", 10240, this,
-                            2, &_task, 0);
+    if (!_lock || xTaskCreatePinnedToCore(&AudioPlayerClass::taskEntry, "audio",
+                                          10240, this, 2, &_task, 0) != pdPASS) {
+        _task = nullptr;
+        Serial.println("[AUDIO] task creation failed");
+        return;
+    }
     Serial.printf("[AUDIO] init: BCLK=%d LRC=%d DIN=%d\n",
                   PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DOUT);
 }
@@ -143,6 +215,13 @@ void AudioPlayerClass::stop() {
     _stopRequest = true;
 }
 
+void AudioPlayerClass::cancelPending() {
+    _hasPending = false;
+    _armed = false;
+    _beepRequest = false;
+    _stopRequest = true;
+}
+
 void AudioPlayerClass::pause() {
     if (_state == State::Playing) {
         _pauseRequest = true;
@@ -175,13 +254,185 @@ void AudioPlayerClass::togglePause() {
     else resume();   // Paused / Idle / 备妥态都走 resume
 }
 
+void AudioPlayerClass::playPrompt(const String &url) {
+    if (!url.length()) return;
+    // TTS 提示音：先暂停当前音乐，用提示音占住播放链路。
+    // 结束时（taskLoop 里 isRunning 变 false）不会置 _finished，
+    // 主循环因此不会误触自动切歌。
+    _promptMode = true;
+    if (_state == State::Playing) pause();
+    play(url, PlayFormat::Mp3);
+}
+
+void AudioPlayerClass::playBeep() {
+    // 请求播放本地提示音：交给音频任务处理（要停当前流、建临时源）。
+    _beepRequest = true;
+}
+
+bool AudioPlayerClass::beginPcmPrompt(uint32_t sampleRate) {
+    if (!gPcmBuffer) gPcmBuffer = (uint8_t *)ps_malloc(kPcmBufferBytes);
+    if (!gPcmBuffer || !gOut) return false;
+    _fadeStartMs = 0;
+    _fadePauseAtEnd = false;
+    _pauseRequest = false;
+    closeStream();
+    portENTER_CRITICAL(&gPcmMux);
+    gPcmRead = gPcmWrite = 0;
+    gPcmGeneration++;
+    gPcmSampleRate = sampleRate;
+    gPcmPrimed = false;
+    portEXIT_CRITICAL(&gPcmMux);
+    gPcmBackpressure = 0;
+    gPcmUnderflows = 0;
+    gPcmStarved = false;
+    gOut->SetRate(sampleRate);
+    gOut->SetBitsPerSample(16);
+    gOut->SetChannels(1);
+    // 语音合成 PCM 的平均响度低于音乐，回复播放时单独提高增益。
+    gOut->SetGain(0.82f);
+    _pcmEndRequested = false;
+    _pcmMode = true;
+    _promptMode = true;
+    _state = State::Playing;
+    Serial.printf("[AUDIO] PCM playback started %luHz\n",
+                  (unsigned long)sampleRate);
+    return true;
+}
+
+size_t AudioPlayerClass::writePcm(const uint8_t *data, size_t len) {
+    if (!_pcmMode || !data) return 0;
+    len &= ~(size_t)1;
+    portENTER_CRITICAL(&gPcmMux);
+    const size_t used = pcmUsed();
+    size_t written = min(len, kPcmBufferBytes - used - 1) & ~(size_t)1;
+    const size_t first = min(written, kPcmBufferBytes - gPcmWrite);
+    memcpy(gPcmBuffer + gPcmWrite, data, first);
+    if (written > first) {
+        memcpy(gPcmBuffer, data + first, written - first);
+    }
+    gPcmWrite = (gPcmWrite + written) % kPcmBufferBytes;
+    portEXIT_CRITICAL(&gPcmMux);
+    return written;
+}
+
+void AudioPlayerClass::endPcmPrompt() { _pcmEndRequested = true; }
+
+void AudioPlayerClass::abortPcmPrompt() {
+    _pcmMode = false;
+    _pcmEndRequested = false;
+    _promptMode = false;
+    portENTER_CRITICAL(&gPcmMux);
+    gPcmRead = gPcmWrite = 0;
+    gPcmGeneration++;
+    gPcmPrimed = false;
+    portEXIT_CRITICAL(&gPcmMux);
+    if (gOut) gOut->stop();
+    _state = State::Idle;
+}
+
+size_t AudioPlayerClass::pcmBufferedBytes() const { return pcmUsed(); }
+
+bool AudioPlayerClass::isPcmPromptDrained() const {
+    return _pcmMode && _pcmEndRequested && pcmUsed() == 0;
+}
+
+// 用内存里的 WAV 提示音打开一条临时的播放流。
+// 源是 PROGMEM 内存源，用独立全局 gBeepSource 持有（closeStream 释放），
+// 不经过 gStream/gBuffer 两个 HTTP 全局；gDec 直接挂 WAV 解码器。
+bool AudioPlayerClass::openBeepStream() {
+    if (!gBeepWav || !gBeepWavLen) return false;
+    _fadeStartMs = 0;
+    _fadePauseAtEnd = false;
+    _pauseRequest = false;
+    closeStream();
+    applyGain(_volume);
+
+    gBeepSource = new AudioFileSourcePROGMEM();
+    if (!gBeepSource->open(gBeepWav, gBeepWavLen)) {
+        delete gBeepSource;
+        gBeepSource = nullptr;
+        return false;
+    }
+
+    AudioGeneratorWAV *wav = new AudioGeneratorWAV();
+    if (!wav->begin(gBeepSource, gOut)) {
+        delete wav;
+        delete gBeepSource;
+        gBeepSource = nullptr;
+        return false;
+    }
+    gDec = wav;
+    return true;
+}
+
 void AudioPlayerClass::setVolume(uint8_t percent) {
     if (percent > 100) percent = 100;
+    _fadeStartMs = 0;
+    _fadePauseAtEnd = false;
     _volume = percent;
+    _gainPercent = percent;
     _volDirtyMs = millis();   // 防抖持久化：停止调节 2s 后落盘
     // 增益上限 0.9 而非 1.0：MP3 解码后的样本本就接近满幅，
     // 增益拉到 1.0 时响度峰值会削波，听感就是持续的破音/沙沙声。
     if (gOut) gOut->SetGain((float)_volume * 0.9f / 100.0f);
+}
+
+// 只改输出增益，不碰 _volDirtyMs：渐变的中间值不是用户设定，
+// 不该写进 NVS（既伤 flash，也会让"恢复原音量"取到错误基准）。
+void AudioPlayerClass::applyGain(uint8_t percent) {
+    if (percent > 100) percent = 100;
+    _gainPercent = percent;
+    if (gOut) gOut->SetGain((float)_gainPercent * 0.9f / 100.0f);
+}
+
+// 非阻塞渐变：只记录起止与时长，实际推进在音频任务的 serviceFade()。
+// 调用方多在 UI 线程，若在此阻塞等待会让界面卡住整个渐变时长。
+void AudioPlayerClass::fadeVolume(uint8_t target, uint16_t durationMs) {
+    if (target > 100) target = 100;
+    if (durationMs == 0) {
+        _fadeStartMs = 0;
+        applyGain(target);
+        return;
+    }
+    _fadeFrom = _gainPercent;
+    _fadeTarget = target;
+    _fadeDurationMs = durationMs;
+    _fadeStartMs = millis();
+    if (_fadeStartMs == 0) _fadeStartMs = 1;   // 0 表示"未在渐变"
+}
+
+void AudioPlayerClass::fadeOutPause(uint16_t durationMs) {
+    if (_state != State::Playing) return;
+    _fadeSavedVolume = _volume;      // 记住用户设定的音量，淡入时还原
+    _fadePauseAtEnd = true;          // 渐变到 0 后由 serviceFade 暂停
+    fadeVolume(0, durationMs);
+}
+
+void AudioPlayerClass::fadeInResume(uint16_t durationMs) {
+    _fadePauseAtEnd = false;
+    applyGain(0);                    // 静音起播，避免恢复瞬间的爆音
+    resume();
+    fadeVolume(_fadeSavedVolume, durationMs);
+}
+
+// 音频任务每轮推进渐变；未在渐变时是一次极廉价的判断。
+void AudioPlayerClass::serviceFade() {
+    if (_fadeStartMs == 0) return;
+    const uint32_t elapsed = millis() - _fadeStartMs;
+    if (elapsed >= _fadeDurationMs) {
+        applyGain(_fadeTarget);
+        _fadeStartMs = 0;
+        if (_fadePauseAtEnd) {
+            _fadePauseAtEnd = false;
+            pause();                 // 淡出到静音后才真正暂停
+        }
+        return;
+    }
+    const int16_t diff = (int16_t)_fadeTarget - (int16_t)_fadeFrom;
+    const int16_t v = (int16_t)_fadeFrom +
+                      (int16_t)((int32_t)diff * (int32_t)elapsed /
+                                (int32_t)_fadeDurationMs);
+    applyGain((uint8_t)(v < 0 ? 0 : (v > 100 ? 100 : v)));
 }
 
 void AudioPlayerClass::volumeUp() {
@@ -249,6 +500,7 @@ void AudioPlayerClass::closeStream() {
         delete gDec;
         gDec = nullptr;
     }
+    if (gBeepSource) { delete gBeepSource; gBeepSource = nullptr; }
     if (gBuffer) { delete gBuffer; gBuffer = nullptr; }
     if (gStream) { delete gStream; gStream = nullptr; }
 }
@@ -258,9 +510,70 @@ void AudioPlayerClass::taskEntry(void *arg) {
 }
 
 void AudioPlayerClass::taskLoop() {
-    uint32_t frameCount = 0;
+    uint32_t lastYieldMs = millis();
 
     for (;;) {
+        if (_pcmMode) {
+            const size_t prebufferBytes =
+                ((size_t)gPcmSampleRate * 2 * kPcmPrebufferMs) / 1000;
+            if (!gPcmPrimed) {
+                const size_t buffered = pcmUsed();
+                if (buffered < prebufferBytes && !_pcmEndRequested) {
+                    vTaskDelay(1);
+                    continue;
+                }
+                gPcmPrimed = true;
+                Serial.printf("[AUDIO] PCM primed %uB\n", (unsigned)buffered);
+            }
+
+            uint8_t bytes[2];
+            bool haveSample = false;
+            size_t expectedRead = 0;
+            uint32_t generation = 0;
+            portENTER_CRITICAL(&gPcmMux);
+            if (pcmUsed() >= 2) {
+                expectedRead = gPcmRead;
+                generation = gPcmGeneration;
+                bytes[0] = gPcmBuffer[expectedRead];
+                bytes[1] = gPcmBuffer[(expectedRead + 1) % kPcmBufferBytes];
+                haveSample = true;
+            }
+            portEXIT_CRITICAL(&gPcmMux);
+            if (haveSample) {
+                gPcmStarved = false;
+                const int16_t mono = (int16_t)((uint16_t)bytes[0] |
+                                               ((uint16_t)bytes[1] << 8));
+                int16_t stereo[2] = {mono, mono};
+                if (gOut->ConsumeSample(stereo)) {
+                    portENTER_CRITICAL(&gPcmMux);
+                    if (gPcmGeneration == generation && gPcmRead == expectedRead) {
+                        gPcmRead = (expectedRead + 2) % kPcmBufferBytes;
+                    }
+                    portEXIT_CRITICAL(&gPcmMux);
+                } else {
+                    gPcmBackpressure++;
+                    vTaskDelay(1);
+                }
+            } else if (_pcmEndRequested) {
+                _pcmMode = false;
+                _pcmEndRequested = false;
+                _promptMode = false;
+                gOut->stop();
+                gOut->SetGain((float)_volume * 0.9f / 100.0f);
+                _state = State::Idle;
+                Serial.printf("[AUDIO] PCM playback complete retries=%lu underflows=%lu\n",
+                              (unsigned long)gPcmBackpressure,
+                              (unsigned long)gPcmUnderflows);
+            } else {
+                if (!gPcmStarved) {
+                    gPcmStarved = true;
+                    gPcmUnderflows++;
+                }
+                vTaskDelay(1);
+            }
+            continue;
+        }
+
         // 音量防抖持久化：停止调节 2s 后写一次 NVS。
         // 连发调音量时不能每次都写：flash 擦写有寿命，且写入会
         // 短暂暂停 flash 缓存（一次性几 ms，64KB 音频缓冲可兜住）。
@@ -272,6 +585,20 @@ void AudioPlayerClass::taskLoop() {
                 p.end();
                 Serial.printf("[AUDIO] volume saved: %u%%\n", _volume);
             }
+        }
+
+        // 语音提示音请求（优先级高于新曲目：录音反馈不能被切歌打断）
+        if (_beepRequest) {
+            _beepRequest = false;
+            _promptMode = true;
+            if (openBeepStream()) {
+                if (gOut) static_cast<SpectrumTapI2S *>(gOut)->resetSamples();
+                _positionMs = 0;
+                _state = State::Playing;
+            } else {
+                _promptMode = false;
+            }
+            continue;
         }
 
         // 新曲目请求
@@ -319,8 +646,25 @@ void AudioPlayerClass::taskLoop() {
         if (!gDec->loop()) {
             closeStream();
             _state = State::Idle;
-            _finished = true;
-            Serial.println("[AUDIO] track finished");
+            if (_promptMode) {
+                // TTS 提示音结束：不产生 finished 事件，避免主循环
+                // 误以为音乐播完而自动切歌。调用方自行决定后续。
+                _promptMode = false;
+                Serial.println("[AUDIO] prompt finished");
+            } else {
+                _finished = true;
+                Serial.println("[AUDIO] track finished");
+            }
+            continue;
+        }
+
+        // 缓冲欠载（网络跟不上 / 歌尾流已读完）：解码器拿不到数据时
+        // loop() 仍返回 true，只是空转不产出帧。此时继续全速轮询毫无
+        // 意义——数据要靠网络任务填进来，抢着 CPU 反而拖慢它。
+        // 主动睡一小会儿，把 core 0 让给网络与空闲任务。
+        if (gBuffer && gBuffer->getFillLevel() == 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            lastYieldMs = millis();
             continue;
         }
 
@@ -342,12 +686,26 @@ void AudioPlayerClass::taskLoop() {
             }
         }
 
-        // 让出策略：每帧都 vTaskDelay(1) 会让解码跟不上 I2S 消耗而爆音，
-        // 每帧都不让又会饿死 UI。折中为按帧计数周期性让出——
-        // MP3 每帧 26ms 音频，每 8 帧（约 200ms 音频）让出 1 tick。
-        // FLAC 帧更长（约 0.5s 音频），让出会更稀疏，但 FLAC 每帧解码
-        // 更重，靠帧计数让出仍能保证 DMA 不欠载、UI 有调度窗口。
-        if ((++frameCount & 0x07) == 0) {
+        // 非阻塞音量渐变：音频任务每轮推进（约 20ms 一次，
+        // 300~400ms 渐变有足够的分辨率），调用方无需等待。
+        serviceFade();
+
+        // 让出策略：按「距上次让出的时间」而非帧数。
+        //
+        // 帧计数的写法在歌尾会触发看门狗复位：流读完后 loop() 拿不到
+        // 数据仍返回 true，循环空转但不产出帧，而库内部的 HTTP 读取
+        // 又可能阻塞自旋数百毫秒——core 0 的 IDLE0 连续数秒得不到调度，
+        // TASK_WDT 判定系统卡死并 abort()。（实测崩溃前 SPEC 的
+        // feedAge 已从 3ms 恶化到 575ms，正是这个过程。）
+        //
+        // 改为时间驱动后，无论解码走哪条路径、是否产出帧，最多
+        // kYieldEveryMs 就必定让出一次，看门狗不可能再饿死。
+        // 20ms 兼顾两头：DMA 有约 185ms 存量不会欠载，UI 与网络
+        // 任务也拿得到稳定的调度窗口。
+        constexpr uint32_t kYieldEveryMs = 20;
+        const uint32_t nowMs = millis();
+        if (nowMs - lastYieldMs >= kYieldEveryMs) {
+            lastYieldMs = nowMs;
             vTaskDelay(1);
         }
     }
