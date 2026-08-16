@@ -11,9 +11,9 @@ MusicServiceClass MusicService;
 
 namespace {
 
-// CloudMusic Tools 后端，经 cpolar 隧道暴露。
-// cpolar 用 HTTPS + 动态证书，固件侧必须 WiFiClientSecure + setInsecure()。
-constexpr const char *kApiBase = "https://b9c3cac.r20.vip.cpolar.cn";
+// CloudMusic Tools 后端，局域网直连。
+// 明文 HTTP，固件侧走 WiFiClient。
+constexpr const char *kApiBase = "http://192.168.28.50:9965";
 constexpr uint32_t kHttpTimeoutMs = 8000;
 
 // ---- 轻量 JSON 取值：后端返回体积可观，避免引入完整解析库占内存 ----
@@ -734,7 +734,7 @@ bool MusicServiceClass::fetchPlayUrl(uint32_t songId) {
     // │ hires    │ Hi-Res     │ 999000      │ 高解析       │
     // └──────────┴────────────┴─────────────┴──────────────┘
     String url = String(kApiBase) +
-                 "/api/music/wy/song/play_urls?id=" + songId + "&level=higher";
+                 "/api/music/wy/song/play_urls?id=" + songId + "&level=standard";
     String body;
 
     xSemaphoreTake(_lock, portMAX_DELAY);
