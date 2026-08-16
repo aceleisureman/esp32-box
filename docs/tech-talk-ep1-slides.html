@@ -1,0 +1,1867 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第一期 · ESP32-S3 怎么唱出一首歌（原理篇）</title>
+<style>
+/* ============================================================
+   ESP32-BOX 技术分析 · 第一期：三条链路原理
+   固定 1280x720 舞台，按视口等比缩放 —— 录屏时版式绝对稳定。
+
+   ── 操作 ──
+   ← → / 空格   翻页
+   F            全屏
+   N            显隐讲稿
+   G            跳页
+   1~6          切换视觉风格（默认 1 示波器）
+   0            切换扫描线（录屏出现摩尔纹时按 0 关掉）
+
+   ── 6 套风格 ──
+   1 SCOPE      示波器：荧光余晖 + 网格 + 扫描线
+   2 PCB        电路板：阻焊绿 + 镀金走线 + 丝印位号
+   3 BLUEPRINT  蓝图：工程制图 + 数据手册
+   4 TERMINAL   终端：琥珀 CRT + 直角 + 光标
+   5 NEON       霓虹：渐变辉光 + 圆角（短视频友好）
+   6 PAPER      技术白：藏青描线 + 白卡片（唯一浅色，适合图文/印刷）
+
+   风格只改颜色令牌与装饰层，正文结构完全不变。
+   ============================================================ */
+
+/* ---------- 风格 1 · 示波器 SCOPE（默认）---------- */
+body[data-theme="scope"]{
+  --surface-1:#070b09; --surface-2:#0d1512; --surface-3:#132019;
+  --text-primary:#eafff2; --text-secondary:#a8d9bd; --text-muted:#5f8f74;
+  --grid:#163024; --rule:#1e3a2c;
+  --s1:#4de5ff; --s2:#ffc247; --s3:#5dfca0; --s4:#c9a227;
+  --good:#5dfca0; --warn:#ffc247; --crit:#ff6b6b;
+  --radius:4px; --glow:0 0 12px rgba(93,252,160,.45);
+}
+/* ---------- 风格 2 · 电路板 PCB ---------- */
+body[data-theme="pcb"]{
+  --surface-1:#0a1410; --surface-2:#102019; --surface-3:#152a20;
+  --text-primary:#f2f5ef; --text-secondary:#aec6b2; --text-muted:#6d8a75;
+  --grid:#183426; --rule:#1e4231;
+  --s1:#5ec98a; --s2:#c87137; --s3:#d9a520; --s4:#b8912f;
+  --good:#5ec98a; --warn:#d9a520; --crit:#e0554f;
+  --radius:3px; --glow:none;
+}
+/* ---------- 风格 3 · 蓝图 BLUEPRINT ---------- */
+body[data-theme="blueprint"]{
+  --surface-1:#0b1826; --surface-2:#102436; --surface-3:#152d43;
+  --text-primary:#eaf3fc; --text-secondary:#aecae5; --text-muted:#6d8fae;
+  --grid:#1b4066; --rule:#24507a;
+  --s1:#5aa9f0; --s2:#7fd4ff; --s3:#57c9a0; --s4:#ffd166;
+  --good:#57c9a0; --warn:#ffd166; --crit:#ff7b72;
+  --radius:2px; --glow:none;
+}
+/* ---------- 风格 4 · 终端 TERMINAL ---------- */
+body[data-theme="terminal"]{
+  --surface-1:#0a0a0b; --surface-2:#121214; --surface-3:#1a1a1c;
+  --text-primary:#f7f4ea; --text-secondary:#bcb6a7; --text-muted:#79746b;
+  --grid:#242427; --rule:#2e2e31;
+  --s1:#63c8ff; --s2:#ff9f43; --s3:#5ee06a; --s4:#ffb000;
+  --good:#5ee06a; --warn:#ffb000; --crit:#ff5f56;
+  --radius:0px; --glow:0 0 10px rgba(255,176,0,.3);
+}
+/* ---------- 风格 5 · 霓虹 NEON ---------- */
+body[data-theme="neon"]{
+  --surface-1:#08070f; --surface-2:#131024; --surface-3:#1a1636;
+  --text-primary:#f6f4ff; --text-secondary:#bfbadd; --text-muted:#7c76a0;
+  --grid:#252048; --rule:#2f2957;
+  --s1:#00e5ff; --s2:#ff3fa4; --s3:#3ff0b0; --s4:#a97bff;
+  --good:#3ff0b0; --warn:#ffd23f; --crit:#ff5c7a;
+  --radius:14px; --glow:0 0 16px rgba(0,229,255,.4);
+}
+
+/* ---------- 风格 6 · 技术白 PAPER（单色藏青，参考技术图文卡片）----------
+   关键特征：整页只有「藏青 + 冷白」两个颜色，没有任何第二强调色。
+   层次靠「描边 / 实心块 / 字重 / 深浅」拉开，不靠色相区分。 */
+body[data-theme="paper"]{
+  --surface-1:#eef1f7;      /* 冷灰白纸面 */
+  --surface-2:#ffffff;      /* 白卡片 */
+  --surface-3:#f3f6fb;      /* 卡片内嵌浅色块 */
+  --text-primary:#12275c;   /* 深藏青 —— 标题、描边、实心块 */
+  --text-secondary:#38497a;
+  --text-muted:#8592af;
+  --grid:#e2e8f3;           /* 表格分隔线 */
+  --rule:#12275c;           /* 描边直接用藏青 —— 这是参考图的标志特征 */
+  /* 全部强调色统一为藏青：参考图是单色设计，无第二色相 */
+  --s1:#12275c; --s2:#12275c; --s3:#12275c; --s4:#12275c;
+  --good:#12275c; --warn:#12275c; --crit:#12275c;
+  --radius:16px; --glow:none;
+}
+
+:root{
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
+
+/* ---- 舞台缩放 ---- */
+#stage{position:absolute;top:50%;left:50%;width:1280px;height:720px;
+       transform-origin:center center;background:var(--surface-1);color:var(--text-primary);
+       overflow:hidden}
+.slide{position:absolute;inset:0;padding:52px 64px 64px;display:none;
+       flex-direction:column;animation:fade .28s ease;z-index:1}
+.slide.on{display:flex}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---- 装饰层：背景纹理（每套风格各自定义）---- */
+#tex{position:absolute;inset:0;pointer-events:none;z-index:0}
+/* ---- 装饰层：扫描线（按 0 可关）---- */
+#scan{position:absolute;inset:0;pointer-events:none;z-index:40;display:none}
+#stage.scanlines #scan{display:block}
+
+/* ---- 页眉 ---- */
+.eyebrow{font-size:13px;letter-spacing:.14em;color:var(--s1);font-weight:700;
+         text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:9px}
+.eyebrow::before{content:"";width:22px;height:2px;background:var(--s1);border-radius:1px}
+h1{font-size:44px;line-height:1.18;margin:0 0 10px;font-weight:700;letter-spacing:-.01em}
+h2{font-size:33px;line-height:1.25;margin:0 0 8px;font-weight:700;letter-spacing:-.01em}
+.sub{font-size:16px;color:var(--text-secondary);line-height:1.65;margin:0 0 22px;max-width:1000px}
+.slide-body{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}
+.slide-body.top{justify-content:flex-start}
+
+/* ---- 页脚 ---- */
+.foot{position:absolute;left:64px;right:64px;bottom:22px;display:flex;
+      justify-content:space-between;align-items:center;font-size:12px;color:var(--text-muted)}
+.foot .tag{font-family:var(--mono);letter-spacing:.04em}
+.pageno{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---- 通用卡片 ---- */
+.card{background:var(--surface-2);border:1px solid var(--rule);border-radius:var(--radius);padding:20px 22px;position:relative}
+.card h3{margin:0 0 10px;font-size:17px;font-weight:700;display:flex;align-items:center;gap:9px}
+.card p{margin:0;font-size:14px;line-height:1.72;color:var(--text-secondary)}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+
+/* ---- 统计块 ---- */
+.stat{background:var(--surface-2);border:1px solid var(--rule);border-radius:var(--radius);padding:18px 20px;position:relative}
+.stat .label{font-size:12.5px;color:var(--text-muted);margin-bottom:7px}
+.stat .value{font-size:36px;font-weight:700;line-height:1;letter-spacing:-.02em}
+.stat .unit{font-size:15px;color:var(--text-secondary);font-weight:600;margin-left:3px}
+.stat .note{font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.55}
+
+/* ---- 表格 ---- */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-weight:600;color:var(--text-muted);font-size:12px;
+   letter-spacing:.05em;text-transform:uppercase;padding:0 12px 9px;border-bottom:1px solid var(--rule)}
+td{padding:9px 12px;border-bottom:1px solid var(--grid);color:var(--text-secondary);line-height:1.5}
+tr:last-child td{border-bottom:none}
+td.k{color:var(--text-primary);font-weight:600}
+td .mono,code{font-family:var(--mono);font-size:12.5px;color:var(--text-primary);
+      background:var(--surface-3);padding:1.5px 6px;border-radius:5px}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+
+/* ---- 代码 / 公式块 ---- */
+pre{margin:0;background:var(--surface-2);border:1px solid var(--rule);border-radius:var(--radius);
+    padding:16px 18px;font-family:var(--mono);font-size:13px;line-height:1.72;
+    color:var(--text-secondary);overflow:hidden}
+pre .c{color:var(--text-muted)}
+pre .k{color:var(--s1);font-weight:600}
+pre .s{color:var(--s3)}
+pre .n{color:var(--s4)}
+pre .hl{color:var(--text-primary);font-weight:600}
+.src{font-family:var(--mono);font-size:11.5px;color:var(--text-muted);margin-top:8px}
+
+/* ---- 公式强调块 ---- */
+.formula{background:var(--surface-3);border-radius:var(--radius);padding:12px 14px;
+         font-family:var(--mono);font-size:13px;line-height:1.8;color:var(--text-secondary)}
+
+/* ---- 流程节点 ---- */
+.chain{display:grid;gap:10px}
+.node{background:var(--surface-3);border-radius:var(--radius);padding:12px 14px;text-align:center}
+.node .t{font-size:12px;font-weight:700;margin-bottom:5px}
+.node .d{font-size:12.5px;color:var(--text-secondary);line-height:1.55}
+
+/* ---- 配图占位框 ----
+   录制/出图时：把 .figure 整块替换成 <img src="..."> 即可，尺寸已由父容器约束。
+   data-fig 属性写的是该图应该拍/画什么内容。 */
+.figure{background:repeating-linear-gradient(45deg,#1c1f26,#1c1f26 9px,#20242c 9px,#20242c 18px);
+        border:1.5px dashed var(--rule);border-radius:var(--radius);display:flex;flex-direction:column;
+        align-items:center;justify-content:center;gap:7px;padding:14px;text-align:center;min-height:96px}
+.figure .fig-tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--s4);
+                 border:1px solid var(--s4);border-radius:4px;padding:1px 7px}
+.figure .fig-desc{font-size:12.5px;color:var(--text-secondary);line-height:1.6;max-width:92%}
+.figure .fig-hint{font-size:11px;color:var(--text-muted);font-family:var(--mono)}
+
+/* ---- 讲稿 ---- */
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:34vh;overflow:auto;
+       background:#0c0d10;border-top:2px solid var(--s1);padding:16px 26px 20px;
+       font-size:15px;line-height:1.8;color:#d8d8d2;display:none;z-index:50}
+#notes.on{display:block}
+#notes b{color:var(--s1);font-size:12px;letter-spacing:.1em;display:block;margin-bottom:6px}
+#notes p{margin:0 0 9px}
+#notes em{color:var(--warn);font-style:normal;font-weight:600}
+/* 演示要点清单：讲的时候扫一眼就能念，右侧 ref 是对应原理页 */
+#notes .cue{color:#ffd75e;font-size:15px;letter-spacing:0;display:inline-block;
+            min-width:15.5em;margin:2px 0}
+#notes .why{color:#9aa3ad}
+#notes .ref{color:var(--s1);font-family:var(--mono);font-size:13px;margin-left:10px}
+
+/* ---- 进度条 ---- */
+#bar{position:fixed;top:0;left:0;height:3px;background:var(--s1);z-index:60;transition:width .28s}
+/* ---- 跳页 ---- */
+#jump{position:fixed;inset:0;background:#000c;display:none;place-items:center;z-index:70}
+#jump.on{display:grid}
+#jump input{font:600 40px var(--mono);background:var(--surface-2);color:#fff;
+            border:2px solid var(--s1);border-radius:12px;padding:14px 28px;width:220px;text-align:center;outline:none}
+
+/* ============================================================
+   风格装饰层 —— 只加视觉，不影响任何正文排版
+   ============================================================ */
+
+/* ---------- 1 SCOPE 示波器：荧光网格 + 余晖 + 卡片角标 ---------- */
+#stage[data-theme="scope"] #tex{
+  background-image:
+    linear-gradient(rgba(93,252,160,.055) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(93,252,160,.055) 1px,transparent 1px);
+  background-size:40px 40px}
+#stage[data-theme="scope"] #scan{
+  background:repeating-linear-gradient(rgba(0,0,0,0) 0 2px,rgba(0,0,0,.20) 2px 4px)}
+#stage[data-theme="scope"] h1,
+#stage[data-theme="scope"] h2,
+#stage[data-theme="scope"] .eyebrow{text-shadow:var(--glow)}
+#stage[data-theme="scope"] .stat .value{text-shadow:0 0 14px currentColor}
+#stage[data-theme="scope"] .card,
+#stage[data-theme="scope"] .stat{background:rgba(13,21,18,.88)}
+#stage[data-theme="scope"] .card::before{
+  content:"";position:absolute;left:-1px;top:-1px;width:11px;height:11px;
+  border-left:2px solid var(--s3);border-top:2px solid var(--s3);opacity:.7}
+#stage[data-theme="scope"] .card::after{
+  content:"";position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;
+  border-right:2px solid var(--s3);border-bottom:2px solid var(--s3);opacity:.7}
+
+/* ---------- 2 PCB 电路板：走线网格 + 镀金过孔 + 丝印位号 ---------- */
+#stage[data-theme="pcb"] #tex{
+  background-image:
+    linear-gradient(90deg,transparent 0 63px,rgba(217,165,32,.10) 63px 65px,transparent 65px),
+    linear-gradient(rgba(217,165,32,.05) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(217,165,32,.05) 1px,transparent 1px);
+  background-size:100% 100%,26px 26px,26px 26px}
+#stage[data-theme="pcb"] .card,
+#stage[data-theme="pcb"] .stat{background:rgba(16,32,25,.94);
+  box-shadow:inset 0 0 0 1px rgba(217,165,32,.13)}
+#stage[data-theme="pcb"] .card::after{
+  content:"";position:absolute;left:-4px;top:17px;width:8px;height:8px;border-radius:50%;
+  background:var(--surface-1);box-shadow:0 0 0 2.5px var(--s3)}
+#stage[data-theme="pcb"] .card[data-ref]::before,
+#stage[data-theme="pcb"] .stat[data-ref]::before{
+  content:attr(data-ref);position:absolute;right:9px;top:6px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;color:var(--s3);opacity:.6}
+
+/* ---------- 3 BLUEPRINT 蓝图：双层网格 + 制图边框 + 标注线 ---------- */
+#stage[data-theme="blueprint"] #tex{
+  background-image:
+    linear-gradient(rgba(90,169,240,.07) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,169,240,.07) 1px,transparent 1px),
+    linear-gradient(rgba(90,169,240,.035) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,169,240,.035) 1px,transparent 1px);
+  background-size:100px 100px,100px 100px,20px 20px,20px 20px}
+#stage[data-theme="blueprint"] #scan{
+  display:block;border:1px solid rgba(90,169,240,.28);inset:24px;background:none}
+#stage[data-theme="blueprint"] .card,
+#stage[data-theme="blueprint"] .stat{background:rgba(16,36,54,.90)}
+#stage[data-theme="blueprint"] h1,
+#stage[data-theme="blueprint"] h2{font-weight:600}
+#stage[data-theme="blueprint"] .card[data-ref]::before{
+  content:attr(data-ref);position:absolute;left:0;top:-16px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--s1);opacity:.8}
+
+/* ---------- 4 TERMINAL 终端：CRT 扫描线 + 直角 + 光标 + 竖条 ---------- */
+#stage[data-theme="terminal"] #scan{
+  background:repeating-linear-gradient(rgba(0,0,0,0) 0 3px,rgba(0,0,0,.13) 3px 4px)}
+#stage[data-theme="terminal"] h1,
+#stage[data-theme="terminal"] h2{text-shadow:var(--glow)}
+#stage[data-theme="terminal"] .eyebrow::before{display:none}
+#stage[data-theme="terminal"] .eyebrow::after{
+  content:"_";animation:blink 1.1s step-end infinite;font-weight:700}
+@keyframes blink{50%{opacity:0}}
+#stage[data-theme="terminal"] .card,
+#stage[data-theme="terminal"] .stat{border-left:3px solid var(--s4)}
+#stage[data-theme="terminal"] .stat .value{font-family:var(--mono)}
+#stage[data-theme="terminal"] .card[data-ref]::before{
+  content:"["attr(data-ref)"]";position:absolute;right:10px;top:7px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--text-muted)}
+
+/* ---------- 5 NEON 霓虹：渐变辉光 + 顶部高光条 ---------- */
+#stage[data-theme="neon"] #tex{
+  background:
+    radial-gradient(700px 380px at 12% -6%,rgba(0,229,255,.15),transparent 65%),
+    radial-gradient(650px 360px at 92% 106%,rgba(255,63,164,.14),transparent 65%)}
+#stage[data-theme="neon"] h1,
+#stage[data-theme="neon"] h2{text-shadow:0 0 22px rgba(0,229,255,.26)}
+#stage[data-theme="neon"] .card,
+#stage[data-theme="neon"] .stat{
+  background:linear-gradient(160deg,rgba(26,22,54,.95),rgba(19,16,36,.95));
+  border-color:rgba(0,229,255,.16)}
+#stage[data-theme="neon"] .card::before{
+  content:"";position:absolute;left:16px;right:16px;top:0;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,var(--s1),var(--s3),var(--s2))}
+#stage[data-theme="neon"] .stat .value{text-shadow:0 0 20px currentColor}
+#stage[data-theme="neon"] .eyebrow::before{
+  background:linear-gradient(90deg,var(--s1),var(--s4));width:26px;height:3px}
+
+/* ---------- 6 PAPER 技术白：单色藏青 · 参考技术图文卡片 ----------
+   设计原则：整页只有藏青 + 冷白两色。层次不靠色相，靠这四样：
+     ① 实心藏青块（顶栏、药丸标题、数字徽章）
+     ② 2px 粗描边（卡片轮廓）
+     ③ 字重差（800 标题 / 600 正文 / 400 注解）
+     ④ 深浅差（藏青 / 中蓝灰 / 浅灰蓝）
+   ------------------------------------------------------------ */
+
+/* 顶部藏青实心通栏 —— 参考图最标志性的结构 */
+#stage[data-theme="paper"] #tex{
+  background:linear-gradient(var(--text-primary) 0 58px,transparent 58px)}
+#stage[data-theme="paper"] .slide{padding:80px 54px 44px}
+/* eyebrow 提到顶栏内反白；页脚 tag 隐藏避免重叠 */
+#stage[data-theme="paper"] .eyebrow{
+  position:absolute;left:54px;top:18px;margin:0;color:#fff;font-size:15px;
+  font-weight:800;letter-spacing:.01em;text-transform:none;z-index:3}
+#stage[data-theme="paper"] .eyebrow::before{display:none}
+#stage[data-theme="paper"] .foot{left:54px;right:54px;top:16px;bottom:auto;z-index:3}
+#stage[data-theme="paper"] .foot .tag{display:none}
+#stage[data-theme="paper"] .foot .pageno{
+  color:#fff;font-weight:800;font-size:19px;margin-left:auto;letter-spacing:.01em}
+
+/* 标题：藏青重磅字 */
+#stage[data-theme="paper"] h1,
+#stage[data-theme="paper"] h2{color:var(--text-primary)!important;font-weight:800;letter-spacing:-.02em}
+#stage[data-theme="paper"] h1 span,
+#stage[data-theme="paper"] h2 span{color:var(--text-primary)!important}
+#stage[data-theme="paper"] .sub{color:var(--text-secondary);font-weight:700}
+
+/* 卡片：白底 + 2px 藏青粗描边（参考图特征），大圆角 */
+#stage[data-theme="paper"] .card,
+#stage[data-theme="paper"] .stat{
+  background:#fff;border:2px solid var(--text-primary)!important;box-shadow:none}
+
+/* 卡片标题 = 藏青实心药丸，白字 */
+#stage[data-theme="paper"] .card{display:flex;flex-direction:column}
+#stage[data-theme="paper"] .card h3{
+  background:var(--text-primary);color:#fff!important;border-radius:9px;
+  padding:7px 15px;margin:-3px -4px 12px;font-size:15.5px;font-weight:800;
+  display:inline-flex;align-self:flex-start;max-width:100%}
+#stage[data-theme="paper"] .card h3 *{color:#fff!important}
+/* 药丸里的圆点改为白色描边小方块，单色下更协调 */
+#stage[data-theme="paper"] .card h3 .dot{
+  background:#fff!important;border-radius:2px;width:8px;height:8px;box-shadow:none}
+
+/* 内嵌块：浅底 + 细描边，保持纸感 */
+#stage[data-theme="paper"] pre,
+#stage[data-theme="paper"] .formula,
+#stage[data-theme="paper"] .node{
+  background:var(--surface-3);border:1.5px solid var(--text-primary);
+  color:var(--text-secondary);border-radius:9px}
+#stage[data-theme="paper"] code{
+  background:var(--surface-3);border:1px solid #c3cee3;color:var(--text-primary)}
+#stage[data-theme="paper"] pre .c{color:#94a1bd}
+#stage[data-theme="paper"] pre .k,
+#stage[data-theme="paper"] pre .s,
+#stage[data-theme="paper"] pre .n,
+#stage[data-theme="paper"] pre .hl{color:var(--text-primary);font-weight:700}
+
+/* 表格：藏青粗表头线 + 浅分隔线 */
+#stage[data-theme="paper"] th{
+  color:var(--text-primary);font-weight:800;border-bottom:2px solid var(--text-primary)}
+#stage[data-theme="paper"] td{border-bottom:1px solid var(--grid)}
+#stage[data-theme="paper"] td.k{color:var(--text-primary);font-weight:700}
+#stage[data-theme="paper"] .stat .value{font-weight:800;color:var(--text-primary)!important}
+#stage[data-theme="paper"] .stat .label{font-weight:600}
+
+/* 正文里的强调 <b>：单色下靠字重与深色，不靠色相 */
+#stage[data-theme="paper"] .card p b,
+#stage[data-theme="paper"] td b{color:var(--text-primary)!important;font-weight:800}
+
+/* 配图占位：白底藏青虚线 */
+#stage[data-theme="paper"] .figure{
+  background:var(--surface-3);border:2px dashed #b6c3dd;border-radius:12px}
+#stage[data-theme="paper"] .figure .fig-desc{color:var(--text-secondary);font-weight:600}
+#stage[data-theme="paper"] .figure .fig-tag{
+  background:var(--text-primary);color:#fff;border-color:var(--text-primary)}
+#stage[data-theme="paper"] .figure .fig-hint{color:var(--text-muted)}
+
+/* 位号标注 */
+#stage[data-theme="paper"] .card[data-ref]::before{
+  content:attr(data-ref);position:absolute;right:13px;top:10px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+  color:var(--text-muted);font-weight:600}
+
+/* 浅色缩排：白底视觉重量轻，同字号显得更挤，统一收一档 */
+#stage[data-theme="paper"] .card{padding:15px 17px}
+#stage[data-theme="paper"] .stat{padding:14px 16px}
+#stage[data-theme="paper"] .grid2{gap:14px}
+#stage[data-theme="paper"] .grid3{gap:12px}
+#stage[data-theme="paper"] .grid4{gap:11px}
+#stage[data-theme="paper"] .sub{margin-bottom:14px;font-size:15px}
+#stage[data-theme="paper"] h1{font-size:40px}
+#stage[data-theme="paper"] h2{font-size:29px;margin-bottom:6px}
+#stage[data-theme="paper"] .card p{font-size:13.2px;line-height:1.65}
+#stage[data-theme="paper"] table{font-size:12.8px}
+#stage[data-theme="paper"] td{padding:7px 10px}
+#stage[data-theme="paper"] pre{padding:13px 15px;font-size:12.3px;line-height:1.62}
+#stage[data-theme="paper"] .formula{padding:10px 12px;line-height:1.7}
+#stage[data-theme="paper"] .figure{min-height:74px;padding:11px}
+/* 进度条：单色下也用藏青 */
+body[data-theme="paper"] #bar{background:var(--text-primary)}
+
+/* 内容溢出兜底：超高时整体等比缩进，宁可小一点也不截断 */
+/* 内容超高时改为顶部对齐：justify-content:center 在溢出时会向上下两端
+   同时溢出，顶部内容会被切掉。加 .dense 即视为超高，一律顶对齐。
+   .dense 由 JS 逐页实测后自动添加，对所有风格生效。 */
+.slide.dense .slide-body{justify-content:flex-start}
+/* 顶栏吃掉 56px，内容最满的几页在浅色下需再收一档（JS 自动加 .dense） */
+.slide.dense .card{padding:12px 14px}
+.slide.dense .card h3{font-size:14.5px;padding:5px 11px;margin-bottom:9px}
+.slide.dense table{font-size:12.2px}
+.slide.dense td{padding:6px 9px}
+.slide.dense th{padding-bottom:7px}
+.slide.dense .figure{min-height:0}
+.slide.dense .sub{margin-bottom:11px}
+.slide.dense h2{font-size:27px}
+.slide.dense .card p{font-size:12.8px;line-height:1.6}
+.slide.dense .formula{font-size:12px;padding:9px 11px;line-height:1.65}
+.slide.dense pre{font-size:11.8px;padding:11px 13px}
+
+/* ---- 风格切换提示（按 T 显隐，录屏时默认隐藏）---- */
+#themebar{position:fixed;right:12px;top:10px;z-index:80;display:none;gap:7px;
+          font-family:var(--mono);font-size:11px;color:#6a6a6a;letter-spacing:.05em}
+#themebar.on{display:flex}
+#themebar b{color:#cfcfcf;font-weight:600}
+</style>
+</head>
+<body data-theme="scope">
+<div id="bar"></div>
+<div id="themebar"><span>风格</span><b id="tname">1 SCOPE</b><span>· 1~6 切换 · 0 扫描线 · T 隐藏</span></div>
+<div id="stage" data-theme="scope" class="scanlines">
+<div id="tex"></div>
+<div id="scan"></div>
+
+<!-- ============ 01 封面 ============ -->
+<section class="slide on" data-notes="开场。<br>
+【口播】一块开发板，一颗指甲盖大的功放芯片，一个三块钱的喇叭，再加一块两寸八的屏和一个摇杆 —— 它是怎么变成一台能看能听能操作的音乐播放器的？<br>
+<em>这一期我只讲原理。</em>不讲我踩了什么坑，不讲接线要注意什么，就把三条链路讲清楚：<em>声音怎么出来、画面怎么显示、你的操作怎么被识别。</em><br>
+讲完你会发现，所谓「播放音乐」其实是一连串非常清晰的信号变换，<em>每一步都有明确的输入和输出，没有任何魔法。</em><br>
+走。">
+  <div class="slide-body">
+    <div class="eyebrow">ESP32-S3 音频专题 · 第一期 / 共两期</div>
+    <h1 style="font-size:54px;max-width:960px">一块开发板，怎么唱出一首歌<br>
+      <span style="color:var(--s3)">音频 · 显示 · 输入，三条链路的完整原理</span></h1>
+    <p class="sub" style="font-size:19px;max-width:880px;margin-top:18px">
+      ESP32-S3 · MAX98357A D 类功放 · ST7789 SPI 屏 · 模拟摇杆<br>
+      本期只讲原理：每一步的输入是什么、输出是什么、为什么需要这一步
+    </p>
+    <div class="grid4" style="margin-top:30px;max-width:900px">
+      <div class="stat"><div class="label">采样率</div><div class="value" style="color:var(--s1)">44.1<span class="unit">kHz</span></div></div>
+      <div class="stat"><div class="label">屏幕分辨率</div><div class="value" style="color:var(--s3)">320<span class="unit">×240</span></div></div>
+      <div class="stat"><div class="label">摇杆信号线</div><div class="value" style="color:var(--s2)">3<span class="unit">根</span></div></div>
+      <div class="stat"><div class="label">链路环节</div><div class="value" style="color:var(--s4)">8<span class="unit">步</span></div></div>
+    </div>
+    <div style="margin-top:16px;display:grid;grid-template-columns:repeat(3,1fr);gap:14px;max-width:900px">
+      <figure style="margin:0">
+        <img src="images/fig-01.png" alt="音乐播放页：封面、歌名与进度"
+             style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;
+                    border-radius:var(--radius);border:1px solid var(--rule)">
+        <figcaption style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+                           color:var(--text-muted);margin-top:7px">封面 · 歌曲信息</figcaption>
+      </figure>
+      <figure style="margin:0">
+        <img src="images/fig-01b.png" alt="音乐播放页：逐行滚动歌词"
+             style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;
+                    border-radius:var(--radius);border:1px solid var(--rule)">
+        <figcaption style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+                           color:var(--text-muted);margin-top:7px">滚动歌词</figcaption>
+      </figure>
+      <figure style="margin:0">
+        <img src="images/fig-01c.png" alt="音乐播放页：实时频谱"
+             style="width:100%;aspect-ratio:4/3;object-fit:cover;display:block;
+                    border-radius:var(--radius);border:1px solid var(--rule)">
+        <figcaption style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+                           color:var(--text-muted);margin-top:7px">实时频谱</figcaption>
+      </figure>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 02 两期规划 ============ -->
+<section class="slide" data-notes="【口播】先说这个系列怎么安排。<br>
+整个项目是一个 ESP32-S3 做的智能音箱：能放歌、能显示歌词和频谱，还能喊「你好小智」跟它对话。<br>
+一期讲完就是一锅粥，所以拆成两期，<em>而且是按「信号的方向」拆的</em>。<br>
+<em>第一期讲「输出与交互」</em>，也就是设备跟人之间的三条通路：声音怎么出来、画面怎么显示、你的操作怎么被识别。<em>这三条链路有一个共同点 —— 它们都是「本地」的</em>，不依赖云端，是这台设备作为一个「播放器」的全部基础。<br>
+<em>第二期讲「听懂」</em>，是反方向：声音怎么进到设备里、怎么在本地识别唤醒词、怎么传到大模型、大模型的回复又怎么变回声音。<br>
+<em>注意最后这一步 —— 大模型的语音回复，走的就是第一期讲的输出链路。</em>所以两期是递进的，第一期是地基。">
+  <div class="eyebrow">Roadmap · 系列规划</div>
+  <h2>按信号方向拆成两期</h2>
+  <p class="sub">第一期讲「设备如何与人交互」，第二期讲「设备如何听懂人话」</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s3)">
+        <h3 style="color:var(--s3)"><span class="dot" style="background:var(--s3)"></span>第一期 · 本期：设备 ↔ 人</h3>
+        <table style="margin-top:6px;font-size:13px">
+          <tr><td class="k" style="width:104px;color:var(--s3)">音频链路</td><td>数字化原理、D 类功放、I2S、流式播放、缓冲、解码、DMA</td></tr>
+          <tr><td class="k" style="color:var(--s1)">显示链路</td><td>SPI 传输、RGB565 色彩编码、局部刷新、字形渲染</td></tr>
+          <tr><td class="k" style="color:var(--s2)">输入链路</td><td>数字按键消抖、模拟摇杆的分压原理与 ADC 判向</td></tr>
+          <tr><td class="k">衍生原理</td><td>播放位置怎么算、频谱怎么从波形变出来、双核怎么分工</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--text-primary)">共同点：三条链路全部是本地的</b>，
+        不依赖云端 —— 这是这台设备作为「播放器」的全部基础。</p>
+      </div>
+      <div class="card" style="border-color:var(--text-muted);opacity:.86">
+        <h3 style="color:var(--text-muted)"><span class="dot" style="background:var(--text-muted)"></span>第二期 · 下期：声音 → 设备 → 云</h3>
+        <table style="margin-top:6px;font-size:13px">
+          <tr><td class="k" style="width:104px">采集</td><td>数字麦克风的工作原理，I2S 输入方向</td></tr>
+          <tr><td class="k">端侧唤醒</td><td>神经网络唤醒词模型如何在 MCU 上运行</td></tr>
+          <tr><td class="k">实时语音流</td><td>WebSocket 双向音频、协议时序设计</td></tr>
+          <tr><td class="k">大模型</td><td>语音识别 + 对话 + 语音合成一体化链路</td></tr>
+        </table>
+        <p style="margin-top:12px;font-size:13.5px"><b style="color:var(--warn)">回到第一期：</b>大模型返回的语音，
+        最终要经过<b style="color:var(--text-primary)">同一套 I2S 输出链路</b>才能被听见；对话状态也要靠<b style="color:var(--text-primary)">同一块屏</b>显示。</p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--s1)">
+      <p style="font-size:14.5px"><b style="color:var(--s1)">本期的边界：</b>
+      不出现任何 AI / 大模型 / 唤醒词内容，也<b style="color:var(--text-primary)">不讲调试经历和工程注意事项</b>。
+      只回答一个问题：<b style="color:var(--s3)">这三条链路的每一步，在物理上和数学上到底在做什么。</b></p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 03 成品演示 ============ -->
+<section class="slide" data-notes="【口播】先看东西，再讲原理。<br>
+这是它现在的样子：2.8 寸屏，上面是封面和歌名，中间是逐行滚动的歌词，底下是十六条实时跳动的频谱柱和进度条。右边这个是模拟摇杆，用来翻歌单、切页面。<br>
+<em>这里请剪辑配上真机演示：开机 → 自动拉歌单 → 摇杆上下选歌、按下确认 → 声音出来、频谱开始跳、歌词跟着走。</em><br>
+演示的时候请留意四件事，它们对应后面四块原理：<br>
+<b class='cue'>① 音乐「秒开」，不用等下载完</b><span class='why'>MP3 的帧结构允许从任意帧开始解码</span><span class='ref'>→ P.10</span><br>
+<b class='cue'>② 歌词四分钟后依然对齐</b><span class='why'>I2S 消费的样本数就是精确的音频时钟</span><span class='ref'>→ P.14</span><br>
+<b class='cue'>③ 频谱跟着鼓点走</b><span class='why'>傅里叶变换把波形拆成各频率的能量</span><span class='ref'>→ P.15</span><br>
+<b class='cue'>④ 画面只有局部在动</b><span class='why'>整屏重画根本来不及 —— SPI 带宽决定的</span><span class='ref'>→ P.17</span><br>
+第四点最关键：<em>频谱柱在跳的时候，上面的封面和歌名是纹丝不动的。这不是因为它们不需要重画，而是因为重画整屏根本来不及</em> —— 这是显示链路那部分的核心原理。<br>
+我们从最根本的问题开始：声音在数字世界里，到底是什么。">
+  <div class="eyebrow">Demo · 成品</div>
+  <h2>先看东西：它现在是这个样子</h2>
+  <p class="sub">2.8 寸屏 + 一个喇叭 + 一个摇杆，联网流式播放、逐行歌词、实时频谱</p>
+  <div class="slide-body top">
+    <div style="display:grid;grid-template-columns:1fr 1.15fr;gap:18px">
+      <figure style="margin:0">
+        <img src="images/fig-02.png" alt="成品全景：ESP32-S3、TFT 屏、摇杆与功放模块"
+             style="width:100%;height:212px;object-fit:cover;display:block;
+                    border-radius:var(--radius);border:1px solid var(--rule)">
+        <figcaption style="font-family:var(--mono);font-size:11px;letter-spacing:.06em;
+                           color:var(--text-muted);margin-top:7px">
+          面包板全貌 · 摇杆 / ESP32-S3 / ST7789 屏 / MAX98357A</figcaption>
+      </figure>
+      <div>
+        <div class="grid2" style="gap:13px">
+          <div class="card" style="padding:15px 17px"><h3 style="font-size:15px"><span class="dot" style="background:var(--s3)"></span>流式播放</h3>
+            <p style="font-size:13px">歌单直链，MP3 / FLAC 边下边解，无需下载整首</p></div>
+          <div class="card" style="padding:15px 17px"><h3 style="font-size:15px"><span class="dot" style="background:var(--s4)"></span>逐行歌词</h3>
+            <p style="font-size:13px">LRC 时间戳解析，按播放位置定位当前行</p></div>
+          <div class="card" style="padding:15px 17px"><h3 style="font-size:15px"><span class="dot" style="background:var(--s1)"></span>实时频谱</h3>
+            <p style="font-size:13px">对波形做 256 点 FFT，16 条柱 50fps 刷新</p></div>
+          <div class="card" style="padding:15px 17px"><h3 style="font-size:15px"><span class="dot" style="background:var(--s2)"></span>摇杆操作</h3>
+            <p style="font-size:13px">上下左右 + 按下，翻歌单、切页面</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 04 系统全貌：三条链路 ============ -->
+<section class="slide" data-notes="【口播】在钻进细节之前，先把整台设备的结构看一遍，这张图后面所有内容都挂在上面。<br>
+中间是 ESP32-S3，它对外连着三条完全独立的链路。<br>
+<em>往下是音频输出链路</em>：I2S 外设通过三根线连到功放，功放推喇叭。这是「设备说话」的通路。<br>
+<em>往上是显示输出链路</em>：SPI 外设通过几根线连到屏幕。这是「设备给你看」的通路。<br>
+<em>往右是输入链路</em>：按键和摇杆。<em>注意这里有个关键区别</em> —— 按键接的是普通 GPIO，读回来的是 0 或 1；而摇杆接的是 ADC，读回来的是一个 0 到 4095 的数值。<em>一个是数字输入，一个是模拟输入，处理方式完全不同</em>，后面会专门讲。<br>
+<em>我希望你注意这三条链路的共同结构：每一条都是「芯片内的数字数据」跟「外部世界的物理量」之间的一次转换。</em>音频是数字变声波，显示是数字变光，输入是物理位移变数字。<br>
+所有嵌入式设备本质上都在做这件事 —— <em>在数字世界和物理世界之间搬运信息。</em>剩下的一切都是细节。">
+  <div class="eyebrow">Overview · 系统全貌</div>
+  <h2>一颗芯片，三条链路</h2>
+  <p class="sub">每一条链路，都是「芯片内的数字数据」与「外部世界的物理量」之间的一次转换</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:1fr 1.25fr;gap:18px;align-items:stretch">
+      <svg viewBox="0 0 300 400" role="img"
+           aria-label="系统连接示意图：ESP32-S3 通过三条链路连接功放喇叭、TFT 屏与摇杆按键"
+           style="width:100%;height:100%;max-height:400px;display:block;
+                  background:var(--surface-2);border:1px solid var(--rule);
+                  border-radius:var(--radius);font-family:var(--mono)">
+        <defs>
+          <marker id="ar-s3" viewBox="0 0 8 8" refX="7" refY="4"
+                  markerWidth="5.5" markerHeight="5.5" orient="auto">
+            <path d="M0 0.5 L8 4 L0 7.5 z" fill="var(--s3)"/></marker>
+          <marker id="ar-s1" viewBox="0 0 8 8" refX="7" refY="4"
+                  markerWidth="5.5" markerHeight="5.5" orient="auto">
+            <path d="M0 0.5 L8 4 L0 7.5 z" fill="var(--s1)"/></marker>
+          <marker id="ar-s2" viewBox="0 0 8 8" refX="7" refY="4"
+                  markerWidth="5.5" markerHeight="5.5" orient="auto">
+            <path d="M0 0.5 L8 4 L0 7.5 z" fill="var(--s2)"/></marker>
+        </defs>
+
+        <!-- ── 显示链路（上）：MCU → SPI → ST7789 ── -->
+        <rect x="72" y="16" width="156" height="52" rx="4"
+              fill="var(--surface-3)" stroke="var(--s1)" stroke-width="1.5"/>
+        <text x="150" y="35" text-anchor="middle" font-size="12.5" font-weight="700"
+              fill="var(--text-primary)">ST7789 · 2.8″ TFT</text>
+        <text x="150" y="50" text-anchor="middle" font-size="10"
+              fill="var(--text-secondary)">320 × 240 像素</text>
+        <text x="150" y="62" text-anchor="middle" font-size="9.5"
+              fill="var(--s1)">数字 → 光</text>
+
+        <path d="M150 112 L150 70" stroke="var(--s1)" stroke-width="2"
+              fill="none" marker-end="url(#ar-s1)"/>
+        <rect x="156" y="76" width="86" height="30" rx="3"
+              fill="var(--surface-1)" stroke="var(--rule)"/>
+        <text x="162" y="87" font-size="9" fill="var(--s1)">SPI · 5 线</text>
+        <text x="162" y="98" font-size="8.5" fill="var(--text-muted)">MOSI 11 · SCLK 12</text>
+
+        <!-- ── 中央 MCU ── -->
+        <rect x="66" y="112" width="168" height="86" rx="5"
+              fill="var(--surface-3)" stroke="var(--text-secondary)" stroke-width="2"/>
+        <text x="150" y="146" text-anchor="middle" font-size="15" font-weight="700"
+              fill="var(--text-primary)">ESP32-S3</text>
+        <text x="150" y="163" text-anchor="middle" font-size="10"
+              fill="var(--text-secondary)">N16R8 · 双核 240MHz</text>
+        <text x="150" y="180" text-anchor="middle" font-size="9.5"
+              fill="var(--text-muted)">16MB Flash · 8MB PSRAM</text>
+
+        <!-- ── 音频链路（下）：MCU → I2S → 功放 → 喇叭 ── -->
+        <path d="M150 198 L150 240" stroke="var(--s3)" stroke-width="2"
+              fill="none" marker-end="url(#ar-s3)"/>
+        <rect x="156" y="204" width="88" height="30" rx="3"
+              fill="var(--surface-1)" stroke="var(--rule)"/>
+        <text x="162" y="215" font-size="9" fill="var(--s3)">I2S · 3 线</text>
+        <text x="162" y="226" font-size="8.5" fill="var(--text-muted)">BCLK 38 · LRC 39</text>
+
+        <rect x="72" y="242" width="156" height="46" rx="4"
+              fill="var(--surface-3)" stroke="var(--s3)" stroke-width="1.5"/>
+        <text x="150" y="260" text-anchor="middle" font-size="12" font-weight="700"
+              fill="var(--text-primary)">MAX98357A</text>
+        <text x="150" y="274" text-anchor="middle" font-size="9.5"
+              fill="var(--text-secondary)">D 类功放 · 内置 DAC</text>
+        <text x="150" y="284" text-anchor="middle" font-size="9"
+              fill="var(--s3)">数字 → 模拟功率</text>
+
+        <path d="M150 288 L150 306" stroke="var(--s3)" stroke-width="2"
+              fill="none" marker-end="url(#ar-s3)"/>
+        <rect x="96" y="308" width="108" height="34" rx="4"
+              fill="var(--surface-3)" stroke="var(--s3)" stroke-width="1.5"/>
+        <text x="150" y="323" text-anchor="middle" font-size="11.5" font-weight="700"
+              fill="var(--text-primary)">喇叭</text>
+        <text x="150" y="336" text-anchor="middle" font-size="9"
+              fill="var(--s3)">电流 → 空气振动</text>
+
+        <!-- ── 输入链路（右→左，箭头指向 MCU）── -->
+        <rect x="18" y="352" width="264" height="38" rx="4"
+              fill="var(--surface-3)" stroke="var(--s2)" stroke-width="1.5"/>
+        <text x="30" y="367" font-size="11" font-weight="700"
+              fill="var(--text-primary)">摇杆 + 3 按键</text>
+        <text x="30" y="380" font-size="8.5" fill="var(--text-muted)">
+          ADC 6/7 → 0~4095 · SW 8 · BTN 13/14/21 → 0|1</text>
+        <text x="272" y="374" text-anchor="end" font-size="9.5"
+              fill="var(--s2)">物理 → 数字</text>
+
+        <path d="M18 371 L10 371 L10 155 L64 155"
+              stroke="var(--s2)" stroke-width="2" fill="none"
+              stroke-dasharray="4 3" marker-end="url(#ar-s2)"/>
+      </svg>
+      <div style="display:grid;gap:13px">
+        <div class="card" data-ref="AUDIO-OUT" style="border-color:var(--s3);padding:15px 18px">
+          <h3 style="font-size:16px"><span class="dot" style="background:var(--s3)"></span>音频输出链路 · 数字 → 声波</h3>
+          <table style="margin-top:4px;font-size:12.5px">
+            <tr><td class="k" style="width:78px">外设</td><td>I2S（3 根线：BCLK / LRC / DIN）</td></tr>
+            <tr><td class="k">对端</td><td>MAX98357A D 类功放 → 喇叭</td></tr>
+            <tr><td class="k">物理量</td><td>空气压强变化</td></tr>
+          </table>
+        </div>
+        <div class="card" data-ref="DISPLAY" style="border-color:var(--s1);padding:15px 18px">
+          <h3 style="font-size:16px"><span class="dot" style="background:var(--s1)"></span>显示输出链路 · 数字 → 光</h3>
+          <table style="margin-top:4px;font-size:12.5px">
+            <tr><td class="k" style="width:78px">外设</td><td>SPI（MOSI / SCLK + CS / DC / RST）</td></tr>
+            <tr><td class="k">对端</td><td>ST7789 控制器 → 2.8" TFT，320×240</td></tr>
+            <tr><td class="k">物理量</td><td>每个像素的红绿蓝亮度</td></tr>
+          </table>
+        </div>
+        <div class="card" data-ref="INPUT" style="border-color:var(--s2);padding:15px 18px">
+          <h3 style="font-size:16px"><span class="dot" style="background:var(--s2)"></span>输入链路 · 物理位移 → 数字</h3>
+          <table style="margin-top:4px;font-size:12.5px">
+            <tr><td class="k" style="width:78px">数字输入</td><td>3 个按键 → GPIO，读回 <b style="color:var(--text-primary)">0 或 1</b></td></tr>
+            <tr><td class="k">模拟输入</td><td>摇杆 X/Y → <b style="color:var(--warn)">ADC，读回 0~4095</b></td></tr>
+            <tr><td class="k">物理量</td><td>手指的按压与推动</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--warn)">
+      <p style="font-size:14.5px"><b style="color:var(--warn)">三条链路的共同结构：</b>
+      音频是<b style="color:var(--text-primary)">数字变声波</b>，显示是<b style="color:var(--text-primary)">数字变光</b>，输入是<b style="color:var(--text-primary)">物理位移变数字</b>。
+      <b style="color:var(--s3)">所有嵌入式设备本质上都在做同一件事 —— 在数字世界和物理世界之间搬运信息。</b>剩下的一切都是细节。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 05 声音的数字化 ============ -->
+<section class="slide" data-notes="【口播】第一个根本问题：<em>声音在数字世界里，到底是什么？</em><br>
+声音的物理本质是空气压强随时间的连续起伏。你说话，声带振动推动空气，形成一列疏密相间的压力波传到别人耳朵里。<em>关键词是「连续」</em> —— 它在时间上和数值上都是无限细分的。<br>
+但计算机只能处理离散的数。所以要把它数字化，必须做两件事：<em>在时间轴上切片，在数值轴上量化。</em><br>
+时间轴上切片，就是采样。每隔固定时间量一次当前的气压值，一秒钟量 44100 次，这就是采样率。<em>为什么是 44100？</em>这里有个定理：奈奎斯特采样定理说，要完整还原一个信号，采样率必须大于它最高频率的两倍。人耳能听到的上限大约 20kHz，所以采样率至少要 40kHz。44100 是 CD 标准定下来的，留了一点余量。<br>
+数值轴上量化，就是位深。每个采样点用 16 位整数表示，也就是从 -32768 到 32767，一共 65536 个档位。<em>位深决定的是动态范围</em> —— 每多一位大约多 6dB，16 位大约是 96dB，足够覆盖从耳语到摇滚现场。<br>
+这两步做完，声音就变成了一串整数。这串整数叫 PCM，脉冲编码调制。<em>请记住：PCM 是这条链路上唯一真正被播放的东西，MP3 也好 FLAC 也好，都只是它的压缩包装。</em>">
+  <div class="eyebrow">Principle · 数字化</div>
+  <h2>声音在数字世界里是什么</h2>
+  <p class="sub">连续的气压波 → 一串整数：时间轴上切片，数值轴上量化</p>
+  <div class="slide-body">
+    <div class="grid3" style="margin-bottom:18px">
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>物理本质</h3>
+        <p style="margin-bottom:10px">空气压强随时间的<b style="color:var(--text-primary)">连续</b>起伏。声带 / 振膜推动空气，形成疏密相间的压力波。</p>
+        <div class="formula">时间上连续<br>数值上连续<br><span style="color:var(--warn)">→ 计算机无法直接表示</span></div>
+      </div>
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>① 采样 · 时间轴切片</h3>
+        <p style="margin-bottom:10px">每隔固定时间量一次瞬时气压值。每秒的次数 = <b style="color:var(--text-primary)">采样率</b>。</p>
+        <div class="formula"><b style="color:var(--s1)">奈奎斯特采样定理</b><br>
+          采样率 &gt; 2 × 最高频率<br>
+          人耳上限 ≈ 20 kHz<br>
+          <span style="color:var(--good)">→ 至少 40 kHz，CD 取 44.1 kHz</span></div>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>② 量化 · 数值轴分档</h3>
+        <p style="margin-bottom:10px">每个采样点用整数表示。位数 = <b style="color:var(--text-primary)">位深</b>，决定<b style="color:var(--text-primary)">动态范围</b>。</p>
+        <div class="formula">16 bit → 65536 档<br>
+          范围 −32768 ~ 32767<br>
+          每多 1 位 ≈ 多 6 dB<br>
+          <span style="color:var(--good)">16 bit ≈ 96 dB 动态范围</span></div>
+      </div>
+    </div>
+    <div class="card" style="background:var(--surface-3);border-color:var(--s4)">
+      <h3 style="color:var(--s4)">两步做完，得到的东西叫 PCM（脉冲编码调制）</h3>
+      <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:16px;margin-top:8px">
+        <pre style="background:var(--surface-2);font-size:12.5px;line-height:1.85"><span class="c">// 一秒钟的 CD 品质立体声，本质就是这样一串数：</span>
+[ <span class="n">-1204</span>, <span class="n">-892</span>, <span class="n">341</span>, <span class="n">1876</span>, <span class="n">2033</span>, <span class="n">1420</span>, <span class="n">-77</span>, ... ]  <span class="c">← 每秒 44100 组</span>
+
+<span class="c">// 数据量 = 采样率 × 位深 × 声道数</span>
+44100 × 16 × 2 = <span class="hl">1411 kbps</span> ≈ <span class="hl">176 KB/s</span></pre>
+        <svg viewBox="0 0 300 150" role="img"
+             aria-label="采样示意：正弦波上等间隔采样，采样值对齐到离散量化档位"
+             style="width:100%;height:100%;display:block;background:var(--surface-2);
+                    border:1px solid var(--rule);border-radius:var(--radius);
+                    font-family:var(--mono)">
+          <!-- 量化档位横线（数值轴分档） -->
+          <g stroke="var(--rule)" stroke-width="1">
+            <line x1="34" y1="24" x2="292" y2="24"/>
+            <line x1="34" y1="45" x2="292" y2="45"/>
+            <line x1="34" y1="66" x2="292" y2="66"/>
+            <line x1="34" y1="87" x2="292" y2="87"/>
+            <line x1="34" y1="108" x2="292" y2="108"/>
+          </g>
+          <text x="30" y="27" text-anchor="end" font-size="7.5" fill="var(--text-muted)">+32767</text>
+          <text x="30" y="69" text-anchor="end" font-size="7.5" fill="var(--text-muted)">0</text>
+          <text x="30" y="111" text-anchor="end" font-size="7.5" fill="var(--text-muted)">−32768</text>
+
+          <!-- 原始连续波形 -->
+          <path d="M34 66 Q52 20 70 40 T106 66 Q124 104 142 96 T178 66 Q196 26 214 44 T250 66 Q268 100 286 78"
+                fill="none" stroke="var(--s2)" stroke-width="2" opacity=".85"/>
+
+          <!-- 等间隔采样：竖线 + 对齐到档位的采样点 -->
+          <g stroke="var(--s1)" stroke-width="1.2" opacity=".75">
+            <line x1="34"  y1="66" x2="34"  y2="66"/>
+            <line x1="55"  y1="66" x2="55"  y2="24"/>
+            <line x1="76"  y1="66" x2="76"  y2="45"/>
+            <line x1="97"  y1="66" x2="97"  y2="66"/>
+            <line x1="118" y1="66" x2="118" y2="87"/>
+            <line x1="139" y1="66" x2="139" y2="108"/>
+            <line x1="160" y1="66" x2="160" y2="87"/>
+            <line x1="181" y1="66" x2="181" y2="66"/>
+            <line x1="202" y1="66" x2="202" y2="24"/>
+            <line x1="223" y1="66" x2="223" y2="45"/>
+            <line x1="244" y1="66" x2="244" y2="66"/>
+            <line x1="265" y1="66" x2="265" y2="87"/>
+            <line x1="286" y1="66" x2="286" y2="87"/>
+          </g>
+          <g fill="var(--s3)">
+            <circle cx="34"  cy="66"  r="2.6"/><circle cx="55"  cy="24"  r="2.6"/>
+            <circle cx="76"  cy="45"  r="2.6"/><circle cx="97"  cy="66"  r="2.6"/>
+            <circle cx="118" cy="87"  r="2.6"/><circle cx="139" cy="108" r="2.6"/>
+            <circle cx="160" cy="87"  r="2.6"/><circle cx="181" cy="66"  r="2.6"/>
+            <circle cx="202" cy="24"  r="2.6"/><circle cx="223" cy="45"  r="2.6"/>
+            <circle cx="244" cy="66"  r="2.6"/><circle cx="265" cy="87"  r="2.6"/>
+            <circle cx="286" cy="87"  r="2.6"/>
+          </g>
+
+          <!-- 采样间隔标注（时间轴切片） -->
+          <g stroke="var(--text-muted)" stroke-width=".9">
+            <line x1="34" y1="122" x2="55" y2="122"/>
+            <line x1="34" y1="119" x2="34" y2="125"/>
+            <line x1="55" y1="119" x2="55" y2="125"/>
+          </g>
+          <text x="60" y="125" font-size="8" fill="var(--text-muted)">
+            1/44100 s · 采样间隔</text>
+
+          <text x="34" y="141" font-size="8.5" fill="var(--s2)">— 连续气压波</text>
+          <text x="128" y="141" font-size="8.5" fill="var(--s1)">│ 时间切片</text>
+          <text x="210" y="141" font-size="8.5" fill="var(--s3)">● 量化取整</text>
+        </svg>
+      </div>
+      <p style="margin-top:11px;font-size:14.5px"><b style="color:var(--warn)">请记住这一点：</b>
+      PCM 是这条链路上<b style="color:var(--text-primary)">唯一真正被播放的东西</b>。
+      MP3、FLAC 都只是它的压缩包装 —— 解码器的职责，就是把包装拆回 PCM。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 06 数字回到模拟 / D 类功放 ============ -->
+<section class="slide" data-notes="【口播】上一页把声音变成了数字，这一页反过来：<em>一串整数，怎么变回空气的振动？</em><br>
+喇叭的工作原理是：线圈通电产生磁场，跟永磁体相互作用，推动振膜前后运动。<em>所以喇叭需要的是一个连续变化的电流</em>，电流大小决定振膜位置。<br>
+那从数字到振膜，中间需要两步：<em>第一步把数变成电压，这叫 DAC；第二步把这个微弱电压放大到能驱动喇叭，这叫功率放大。</em><br>
+传统方案就是这么做的：一颗 DAC 芯片，一颗功放芯片，串起来。但传统的 AB 类功放有个物理上的硬伤 —— <em>它的输出管始终工作在线性放大区，也就是说管子本身一直在「半导通」状态分压，分掉的电压全部变成热量。</em>所以效率只有百分之五十左右，一半的电都拿去发热了。<br>
+D 类功放的思路完全不同。<em>它不让管子工作在线性区，只让它彻底导通或者彻底关断。</em>完全导通时管子两端电压接近 0，完全关断时电流接近 0 —— 无论哪种状态，功耗都接近 0。<br>
+那怎么表达中间的音量？<em>靠改变开关的占空比。</em>这就是 PWM，脉宽调制。要输出大信号，就让高电平占的时间长一点。开关频率远高于音频，大约几百 kHz。<br>
+最后一步最妙：<em>这串高频方波不需要额外的滤波器，喇叭自己的线圈就是电感。</em>电感天然阻碍电流突变，把高频方波平滑成了低频的模拟波形。所以 MAX98357A 直接吃 I2S 数字信号、直接接喇叭，中间什么都不需要 —— 它把 DAC 和功放这两步，用一套开关电路合成了一步。">
+  <div class="eyebrow">Principle · 功放</div>
+  <h2>一串整数，怎么变回空气的振动</h2>
+  <p class="sub">D 类功放的核心思想：不做线性放大，只做开关 —— 然后让喇叭线圈自己滤波</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--text-muted)">
+        <h3 style="color:var(--text-muted)">传统方案 · AB 类：线性放大</h3>
+        <p style="margin-bottom:11px">DAC 芯片把数字变成模拟电压 → 功放芯片把它<b style="color:var(--text-primary)">线性放大</b>到能推喇叭。</p>
+        <div class="formula" style="line-height:1.9">输出管工作在<b style="color:var(--warn)">线性区</b><br>
+          管子始终「半导通」<b style="color:var(--text-primary)">参与分压</b><br>
+          <span style="color:var(--crit)">分掉的电压 → 全部变成热量</span><br>
+          <span style="color:var(--crit)">效率 ≈ 50%，一半的电用来发热</span></div>
+        <p style="margin-top:11px;font-size:13.5px">波形保真度高，但<b style="color:var(--text-primary)">需要散热、需要两颗芯片、外围元件多</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">D 类：只开关，不放大</h3>
+        <p style="margin-bottom:11px">输出管<b style="color:var(--text-primary)">只有两种状态</b>：彻底导通、彻底关断。中间态尽可能不停留。</p>
+        <div class="formula" style="line-height:1.9">完全导通 → 管压降 ≈ 0 → <b style="color:var(--good)">功耗 ≈ 0</b><br>
+          完全关断 → 电流 ≈ 0 → <b style="color:var(--good)">功耗 ≈ 0</b><br>
+          <span style="color:var(--good)">效率 &gt; 90%，几乎不发热</span></div>
+        <p style="margin-top:11px;font-size:13.5px">那音量大小怎么表达？<b style="color:var(--warn)">靠改变开关的占空比</b> —— 见下方。</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px;background:var(--surface-3);border-color:var(--s2)">
+      <h3 style="color:var(--s2)">D 类的两个关键机制：PWM 调制 + 喇叭线圈自滤波</h3>
+      <div class="grid2" style="gap:18px;margin-top:8px">
+        <div>
+          <p style="margin-bottom:9px"><b style="color:var(--text-primary)">① PWM 脉宽调制</b> —— 用「高电平占多久」编码信号幅度。开关频率远高于音频（数百 kHz）。</p>
+          <pre style="background:var(--surface-2);font-size:12px;line-height:1.8"><span class="c">大信号 → 占空比高</span>
+<span class="k">▔▔▔▔▔▁▔▔▔▔▔▁▔▔▔▔▔▁</span>
+
+<span class="c">小信号 → 占空比低</span>
+<span class="k">▔▁▁▁▁▁▔▁▁▁▁▁▔▁▁▁▁▁</span></pre>
+        </div>
+        <div>
+          <p style="margin-bottom:9px"><b style="color:var(--text-primary)">② 喇叭线圈 = 天然低通滤波器</b> —— 电感阻碍电流突变，把高频方波<b style="color:var(--s3)">平滑成低频模拟波形</b>。</p>
+          <div class="formula" style="line-height:1.9">不需要额外滤波元件<br>
+            不需要独立 DAC 芯片<br>
+            <span style="color:var(--good)">→ I2S 数字信号进，喇叭线直接出</span></div>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:grid;grid-template-columns:1fr 150px;gap:16px;align-items:center">
+        <p style="font-size:14.5px;margin:0"><b style="color:var(--warn)">所以 MAX98357A 的本质是：</b>
+        把「数字转模拟」和「功率放大」<b style="color:var(--text-primary)">用同一套开关电路合成了一步</b>。
+        这就是为什么指甲盖大的一颗芯片能推 3W 喇叭，还几乎不发热。</p>
+        <figure style="margin:0">
+          <img src="images/fig-05.png" alt="MAX98357A 功放模块与喇叭实拍"
+               style="width:100%;height:118px;object-fit:cover;object-position:center 38%;
+                      display:block;border-radius:var(--radius);border:1px solid var(--rule)">
+          <figcaption style="font-family:var(--mono);font-size:9.5px;letter-spacing:.05em;
+                             color:var(--text-muted);margin-top:5px;text-align:center">
+            紫色模块即 MAX98357A</figcaption>
+        </figure>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 07 I2S 协议 ============ -->
+<section class="slide" data-notes="【口播】现在讲这串 PCM 数据是怎么从芯片传到功放的 —— I2S 协议。<br>
+先说为什么需要专门的协议。你可能会想，用 SPI 或者 I2C 不行吗？<em>不行，因为音频有一个特殊要求：严格的等时性。</em>44100 个样本必须精确地在一秒内送完，早了晚了都会变调。普通的数据总线只保证「送到」，不保证「准时送到」。<br>
+I2S 是专门为这件事设计的，三根线。<br>
+<em>BCLK 是位时钟</em>，每个上升沿代表「这一位有效了，请采样」。它的频率是算出来的：采样率乘位深乘声道数，44100 乘 16 乘 2 等于 1.4112 兆赫兹。<br>
+<em>LRC 是帧同步</em>，也叫 WS 字选择。它的频率正好等于采样率，44100 赫兹。低电平的时候传左声道，高电平传右声道。<em>它翻转一次，就代表一个声道的样本传完了 —— 所以它其实就是整个系统的节拍器。</em><br>
+<em>DIN 是数据线</em>，一位一位地把样本送出去，高位在前。<br>
+理解这三根线的关系，最重要的是明白一件事：<em>音频的时间信息，是编码在时钟里的，不在数据里。</em>数据线上只有 0 和 1，没有任何「这是第几个样本」的标记。是 LRC 划出声道边界、BCLK 划出比特边界，接收方才知道该怎么解读。<br>
+这也解释了为什么这三根线必须严格同步 —— 任何一根出问题，接收方的解读就全乱了，出来的不是音乐而是噪音。">
+  <div class="eyebrow">Principle · I2S</div>
+  <h2>PCM 怎么从芯片传到功放</h2>
+  <p class="sub">音频对总线的特殊要求是「等时性」—— 不只要送到，还要精确准时地送到</p>
+  <div class="slide-body">
+    <div class="grid3" style="margin-bottom:16px">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>BCLK · 位时钟</h3>
+        <p style="margin-bottom:10px">每个上升沿 = <b style="color:var(--text-primary)">「这一位有效，请采样」</b>。划分<b style="color:var(--text-primary)">比特边界</b>。</p>
+        <div class="formula">采样率 × 位深 × 声道数<br>
+          44100 × 16 × 2<br>
+          = <b style="color:var(--warn)">1.4112 MHz</b></div>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>LRC / WS · 帧同步</h3>
+        <p style="margin-bottom:10px">划分<b style="color:var(--text-primary)">声道边界</b>：低电平传左声道，高电平传右声道。</p>
+        <div class="formula">频率 = 采样率<br>
+          = <b style="color:var(--s3)">44100 Hz</b><br>
+          <span style="color:var(--text-muted)">整个系统的节拍器</span></div>
+      </div>
+      <div class="card" style="border-color:var(--s4)">
+        <h3><span class="dot" style="background:var(--s4)"></span>DIN · 数据</h3>
+        <p style="margin-bottom:10px">样本内容本身，<b style="color:var(--text-primary)">串行逐位送出</b>，高位在前（MSB first）。</p>
+        <div class="formula">1 个 16 位样本<br>
+          = <b style="color:var(--s4)">16 个 BCLK 周期</b></div>
+      </div>
+    </div>
+
+    <div class="card" style="background:var(--surface-3)">
+      <h3><span class="dot" style="background:var(--warn)"></span>三根线的配合：时间信息在时钟里，不在数据里</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px;line-height:1.85"><span class="c">              ├──────── 左声道 16bit ────────┤├──────── 右声道 16bit ────────┤</span>
+LRC   <span class="k">▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▏▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔</span>  <span class="c">44.1 kHz</span>
+BCLK  <span class="k">▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁</span>  <span class="c">1.41 MHz</span>
+DIN   <span class="s">╳ b15 ╳ b14 ╳ b13 ╳ ...................... ╳ b1 ╳ b0 ╳</span>              <span class="c">MSB first</span></pre>
+      <p style="margin-top:12px;font-size:14.5px"><b style="color:var(--s3)">核心原理：</b>
+      数据线上只有 0 和 1，<b style="color:var(--text-primary)">没有任何「这是第几个样本」的标记</b>。
+      是 LRC 划出声道边界、BCLK 划出比特边界，接收方才知道如何解读这串比特 ——
+      <b style="color:var(--warn)">所以三者必须严格同步，任何一根失步，收到的都是噪音而非音乐。</b></p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 08 音频硬件拓扑 ============ -->
+<section class="slide" data-notes="【口播】把前面两页合起来，就是这一期的硬件全貌，非常简单，就三个部分。<br>
+<em>ESP32-S3 负责数字域。</em>它内部有专门的 I2S 外设，这个外设的作用是：从内存里取出 PCM 样本，按照精确的时钟节奏，串行地送到三根引脚上。<em>注意这是硬件外设在做，不是 CPU 在做</em> —— 后面讲 DMA 的时候会展开，这一点是整个系统能同时放歌又刷屏的关键。<br>
+<em>MAX98357A 负责跨越数字和模拟的边界。</em>它接收 I2S 信号，用上一页讲的 D 类开关方式，直接输出能驱动喇叭的功率信号。<br>
+<em>喇叭负责模拟域的最后一步</em>，把电流变成振膜运动，也就是声音。同时它的线圈还兼任了 D 类功放的滤波器。<br>
+这里补充一个原理性的点：<em>为什么单声道就够了。</em>MAX98357A 是单声道芯片，它默认会把左右声道取平均，也就是 L 加 R 除以 2。<em>这个做法不会丢失任何声音内容</em>，只是丢掉了「方位信息」。而在一个巴掌大的音箱上，两个喇叭的间距只有几厘米，人耳根本无法分辨方位，立体声本来就没有意义。所以这不是妥协，是合理的简化。">
+  <div class="eyebrow">Principle · 拓扑</div>
+  <h2>三个部分，跨越两个世界</h2>
+  <p class="sub">数字域 → 边界 → 模拟域，每一部分只做一件事</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:14px;align-items:center;margin-bottom:20px">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>ESP32-S3 · 数字域</h3>
+        <p style="margin-bottom:9px">内置 <b style="color:var(--text-primary)">I2S 硬件外设</b>：从内存取 PCM 样本，按精确时钟节奏串行送出。</p>
+        <div class="formula" style="font-size:12px">输入：内存里的 PCM<br>输出：BCLK / LRC / DIN<br>
+        <span style="color:var(--warn)">由硬件完成，不占 CPU</span></div>
+      </div>
+      <div style="font-size:26px;color:var(--text-muted);text-align:center">→</div>
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>MAX98357A · 边界</h3>
+        <p style="margin-bottom:9px">D 类开关调制，<b style="color:var(--text-primary)">把数字直接变成功率</b>，无需独立 DAC。</p>
+        <div class="formula" style="font-size:12px">输入：I2S 数字信号<br>输出：PWM 功率方波<br>
+        <span style="color:var(--good)">效率 &gt; 90%</span></div>
+      </div>
+      <div style="font-size:26px;color:var(--text-muted);text-align:center">→</div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>喇叭 · 模拟域</h3>
+        <p style="margin-bottom:9px">线圈通电产生磁场推动振膜；<b style="color:var(--text-primary)">线圈电感兼任低通滤波器</b>。</p>
+        <div class="formula" style="font-size:12px">输入：PWM 功率方波<br>输出：空气压强变化<br>
+        <span style="color:var(--s3)">= 声音</span></div>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s4)"></span>信号连接：只有三根线</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px"><code>BCLK</code></td><td>位时钟 → 划分比特边界</td></tr>
+          <tr><td class="k"><code>LRC</code></td><td>帧同步 → 划分声道边界</td></tr>
+          <tr><td class="k"><code>DIN</code></td><td>串行数据 → 样本内容</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">整条数字音频通路的物理实现，<b style="color:var(--text-primary)">就是这三根线加上电源和地</b>。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s3)">
+        <h3 style="color:var(--s3)">为什么单声道就够 —— 这不是妥协</h3>
+        <p style="margin-bottom:9px">功放芯片默认取 <b style="color:var(--text-primary)">(L + R) / 2</b> 混合声道。</p>
+        <p>这个操作<b style="color:var(--good)">不丢失任何声音内容</b>，只丢失「方位信息」。而在巴掌大的音箱上，
+        两个喇叭间距只有几厘米 —— <b style="color:var(--text-primary)">人耳本就无法分辨方位，立体声没有意义</b>。</p>
+        <p style="margin-top:9px">附带收益：<b style="color:var(--s3)">DMA 带宽减半</b>，因为只需要搬一路数据。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 09 播放链路总览 ============ -->
+<section class="slide" data-notes="【口播】硬件讲完了，现在讲软件：<em>按下播放键之后，数据是怎么一步步流到喇叭的。</em><br>
+八步。我先快速过一遍，后面挑重要的展开。<br>
+第一步，从服务端拉歌单，拿到歌曲 ID、标题、歌手、封面地址。第二步，用 ID 换取真正的播放直链。第三步，建立 HTTP 流式连接 —— <em>注意是流式，不是把整首歌下载下来</em>，下一页专门讲这个原理。<br>
+第四步是缓冲。第五步解码：MP3 或者 FLAC 变回 PCM。第六步，解码出来的 PCM 分一路给频谱做 FFT。第七步进 DMA 队列，第八步 I2S 硬件把它送给功放。<br>
+<em>这张图我希望你记住两个结构性特征。</em><br>
+第一，<em>整条链路是一条流水线，每一级的输出就是下一级的输入</em>，而且每一级的处理速度不一样：网络是不稳定的，解码是突发的，I2S 是恒定的。<em>速度不匹配的地方，就必须有缓冲。</em>这就是为什么第四步和第七步各有一级缓冲。<br>
+第二，<em>格式的差异在第五步就消失了。</em>不管你播的是 MP3 还是 FLAC，解码之后都是 PCM，往后的链路完全一样。<em>解码器的本质是格式适配层。</em>这也是为什么第二期的语音回复能直接复用这条链路 —— 大模型返回的本来就是 PCM，它连解码这步都省了，直接从第七步接入。">
+  <div class="eyebrow">Principle · 链路</div>
+  <h2>按下播放键之后，数据怎么流</h2>
+  <p class="sub">一条八级流水线 —— 速度不匹配的地方，就必须有缓冲</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:13px">
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s2);font-family:var(--mono)">01</span> 拉歌单</h3>
+        <p style="font-size:13px">HTTPS 取歌单 JSON：ID / 标题 / 歌手 / 封面地址</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s2);font-family:var(--mono)">02</span> 换直链</h3>
+        <p style="font-size:13px">用歌曲 ID 换取真实的音频文件播放地址</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s2);font-family:var(--mono)">03</span> 建流</h3>
+        <p style="font-size:13px">HTTP 流式连接，<b style="color:var(--text-primary)">边下边播</b>，不下载整首 → P.09</p></div>
+      <div class="card" style="padding:15px 17px;border-color:var(--s4)"><h3 style="font-size:14.5px"><span style="color:var(--s4);font-family:var(--mono)">04</span> 流缓冲</h3>
+        <p style="font-size:13px">吸收<b style="color:var(--s4)">网络速度</b>的不确定性 → P.10</p></div>
+      <div class="card" style="padding:15px 17px;border-color:var(--s3)"><h3 style="font-size:14.5px"><span style="color:var(--s3);font-family:var(--mono)">05</span> 解码</h3>
+        <p style="font-size:13px">MP3 / FLAC → <b style="color:var(--s3)">PCM</b><br>格式差异到此为止 → P.11</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s1);font-family:var(--mono)">06</span> 频谱分流</h3>
+        <p style="font-size:13px">复制一路 PCM 送去做傅里叶变换 → P.14</p></div>
+      <div class="card" style="padding:15px 17px;border-color:var(--s4)"><h3 style="font-size:14.5px"><span style="color:var(--s4);font-family:var(--mono)">07</span> DMA 队列</h3>
+        <p style="font-size:13px">吸收 <b style="color:var(--s4)">CPU 调度</b>的不确定性 → P.12</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s1);font-family:var(--mono)">08</span> I2S 输出</h3>
+        <p style="font-size:13px">硬件按恒定时钟串行送出 → 功放 → 喇叭</p></div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card" style="background:var(--surface-3);border-color:var(--s4)">
+        <h3 style="color:var(--s4)">结构特征一：三种速度，两级缓冲</h3>
+        <p><b style="color:var(--text-primary)">网络</b>是不稳定的（秒级抖动）、<b style="color:var(--text-primary)">解码</b>是突发的（毫秒级抖动）、
+        <b style="color:var(--text-primary)">I2S 是恒定的</b>（严格 44100 样本/秒）。
+        <b style="color:var(--warn)">速度不匹配的界面上，必须放缓冲。</b></p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s3)">
+        <h3 style="color:var(--s3)">结构特征二：格式差异在第 5 步消失</h3>
+        <p>MP3 也好 FLAC 也好，解码后<b style="color:var(--text-primary)">都是 PCM</b>，往后链路完全一样 ——
+        <b style="color:var(--s3)">解码器的本质是格式适配层</b>。
+        <span style="color:var(--text-muted)">（第二期的语音回复本就是 PCM，连解码都省了，直接从第 7 步接入。）</span></p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 10 流式播放原理 ============ -->
+<section class="slide" data-notes="【口播】展开讲第三步：<em>为什么能「边下边播」，而不需要先下载完整首歌。</em><br>
+先说不流式的话会怎样。一首四分钟的 320k MP3 大约 10MB。ESP32 一共只有 8MB 的外部内存，<em>根本放不下一首完整的歌</em>。就算放得下，用户按下播放要等十几秒才出声，体验也不能接受。<br>
+那流式播放为什么可行？<em>关键在于 MP3 这类格式的文件结构。</em><br>
+MP3 文件不是一个整体，<em>它是由一连串独立的「帧」拼接而成的</em>。每一帧大约 26 毫秒的音频，每一帧都自带一个帧头，帧头里写明了这一帧的采样率、码率、声道数。<em>最关键的性质是：每一帧都可以独立解码，不依赖前后的帧。</em><br>
+这个性质带来的结果就是：<em>你不需要拿到整个文件，只要凑够一帧，就能解出 26 毫秒的声音。</em>解码器可以从数据流里不断读帧、不断产出 PCM，一边下一边放。<br>
+顺带说一句，这也是为什么 MP3 可以「从中间开始播」，以及为什么剪切 MP3 文件不需要重新编码 —— <em>都是同一个帧独立性在起作用。</em><br>
+HTTP 协议这边也是配合的：HTTP 响应体本来就是一个字节流，服务器发一点你收一点，不需要等 Content-Length 收满。两边一配合，流式播放就成立了。">
+  <div class="eyebrow">Principle · 流式</div>
+  <h2>为什么能「边下边播」</h2>
+  <p class="sub">因为 MP3 不是一个整体文件，而是一串可独立解码的帧</p>
+  <div class="slide-body">
+    <div class="grid2" style="margin-bottom:18px">
+      <div class="card" style="border-color:var(--text-muted)">
+        <h3 style="color:var(--text-muted)">如果必须下载完整首</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:130px">一首 4 分钟 320k</td><td class="num">≈ 10 MB</td></tr>
+          <tr><td class="k">设备全部外部内存</td><td class="num">8 MB</td></tr>
+        </table>
+        <p style="margin-top:11px"><b style="color:var(--crit)">连一首歌都放不下</b>。即便放得下，按下播放也要等十几秒才出声。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">流式播放的前提：帧独立性</h3>
+        <p style="margin-bottom:9px">MP3 文件<b style="color:var(--text-primary)">不是一个整体</b>，而是一连串独立帧的拼接。</p>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:110px">每帧时长</td><td>约 26 ms 音频</td></tr>
+          <tr><td class="k">每帧自带</td><td>帧头：采样率 / 码率 / 声道数</td></tr>
+          <tr><td class="k"><b style="color:var(--good)">关键性质</b></td><td><b style="color:var(--text-primary)">每帧可独立解码，不依赖前后帧</b></td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="background:var(--surface-3);border-color:var(--s3)">
+      <h3 style="color:var(--s3)">帧独立性带来的直接结果</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px;line-height:1.85"><span class="c">MP3 文件结构：</span>
+┌────────┬────────┬────────┬────────┬────────┬─────
+│ 帧头+数据│ 帧头+数据│ 帧头+数据│ 帧头+数据│ 帧头+数据│ ...
+└────────┴────────┴────────┴────────┴────────┴─────
+  <span class="s">26ms</span>      <span class="s">26ms</span>      <span class="s">26ms</span>      <span class="s">26ms</span>      <span class="s">26ms</span>
+
+<span class="c">→ 凑够一帧，就能解出 26ms 的 PCM，无需等待整个文件</span>
+<span class="c">→ HTTP 响应体本就是字节流：服务器发一点，设备收一点、解一点、播一点</span></pre>
+      <p style="margin-top:12px;font-size:14.5px"><b style="color:var(--warn)">同一个性质还解释了另外两件事：</b>
+      为什么 MP3 可以<b style="color:var(--text-primary)">从中间任意位置开始播放</b>；
+      为什么<b style="color:var(--text-primary)">剪切 MP3 文件不需要重新编码</b> —— 按帧边界切开就行。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 11 缓冲原理 ============ -->
+<section class="slide" data-notes="【口播】这页讲缓冲的原理，我觉得是这条链路里最值得理解的一个概念。<br>
+<em>缓冲的本质是什么？是用延迟，换确定性。</em><br>
+为什么需要它？因为这条流水线上，<em>只有最后一级是恒定速度的</em>。I2S 硬件每秒必须精确消费 44100 个样本，不多不少，这是物理约束，因为它直接对应着声音的时间。<br>
+但前面每一级都是不确定的：网络时快时慢，解码任务会被别的任务抢占。<em>一个不确定的生产者，要供给一个恒定的消费者 —— 中间必须有个水池。</em>生产快的时候往池子里存，生产慢的时候从池子里取，只要池子不空，消费端就感觉不到波动。<br>
+<em>那池子要多深？这就是关键的设计原理：缓冲深度必须匹配它要吸收的抖动的时间尺度。</em><br>
+所以这条链路上有两级缓冲，因为要吸收的是两种完全不同尺度的抖动。<br>
+<em>第一级是流缓冲，256KB，对应大约 6 秒的音频。</em>它防的是网络问题 —— WiFi 抖动、服务器慢一拍，这些都是秒级的，所以池子要按秒设计。<br>
+<em>第二级是 DMA 缓冲，大约 185 毫秒。</em>它防的是 CPU 调度问题 —— 解码任务被抢占、别的任务占住核心，这些都是毫秒级的，所以池子按百毫秒设计就够了。<br>
+<em>为什么不用一级大的解决所有问题？</em>因为 DMA 缓冲必须是硬件能直接访问的特殊内存，很宝贵，做不大；而流缓冲是普通内存，可以做大但硬件访问不了。两级各司其职，这是硬件结构决定的。">
+  <div class="eyebrow">Principle · 缓冲</div>
+  <h2>缓冲的本质：用延迟换确定性</h2>
+  <p class="sub">一个不确定的生产者，要供给一个恒定的消费者 —— 中间必须有个水池</p>
+  <div class="slide-body top">
+    <div class="card" style="border-color:var(--s3);margin-bottom:16px">
+      <h3 style="color:var(--s3)">为什么必须有缓冲：整条链路只有最后一级是恒定速度</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:8px">
+        <div class="formula"><b style="color:var(--s2)">网络</b><br>时快时慢，可能停顿<br><span style="color:var(--warn)">秒级不确定</span></div>
+        <div class="formula"><b style="color:var(--s1)">解码</b><br>会被其他任务抢占<br><span style="color:var(--warn)">毫秒级不确定</span></div>
+        <div class="formula"><b style="color:var(--s3)">I2S 输出</b><br>每秒精确 44100 样本<br><span style="color:var(--good)">物理约束，绝对恒定</span></div>
+      </div>
+      <p style="margin-top:12px;font-size:14px">I2S 的速度不能变 —— 因为<b style="color:var(--text-primary)">它直接对应声音的时间</b>，快了变调，慢了拖沓，断了就是爆音。</p>
+    </div>
+
+    <div class="card" style="border-color:var(--warn);margin-bottom:16px">
+      <h3 style="color:var(--warn)">核心设计原理：缓冲深度必须匹配它要吸收的抖动的时间尺度</h3>
+      <p style="margin-top:4px">这就是为什么这条链路上有<b style="color:var(--text-primary)">两级</b>缓冲，而不是一级 —— 它们要吸收的是两种完全不同尺度的不确定性。</p>
+    </div>
+
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s4)">
+        <h3><span class="dot" style="background:var(--s4)"></span>第一级 · 流缓冲</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px">容量</td><td class="num">256 KB</td><td>约 6 秒音频（320k 码率）</td></tr>
+          <tr><td class="k">位置</td><td colspan="2">外部 PSRAM（普通内存，可做大）</td></tr>
+          <tr><td class="k">吸收</td><td colspan="2"><b style="color:var(--text-primary)">网络抖动</b> —— 秒级</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">网络可以完全停顿数秒，只要池子没空，<b style="color:var(--good)">声音一点都不会断</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>第二级 · DMA 缓冲</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px">容量</td><td class="num">≈185 ms</td><td>16 块 @ 44.1kHz</td></tr>
+          <tr><td class="k">位置</td><td colspan="2">内部 SRAM（<b style="color:var(--warn)">硬件可直接访问，稀缺</b>）</td></tr>
+          <tr><td class="k">吸收</td><td colspan="2"><b style="color:var(--text-primary)">CPU 调度抖动</b> —— 毫秒级</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">解码任务被抢占一百毫秒，<b style="color:var(--good)">I2S 硬件仍在自顾自地播</b>。</p>
+      </div>
+    </div>
+    <p style="margin-top:14px;font-size:14px;color:var(--text-secondary)"><b style="color:var(--warn)">为什么不用一级大的解决所有问题：</b>
+    DMA 缓冲必须放在<b style="color:var(--text-primary)">硬件能直接访问的内部内存</b>里，容量稀缺、做不大；
+    流缓冲是普通内存，能做大但<b style="color:var(--text-primary)">硬件访问不了</b>。<b style="color:var(--s3)">两级分工是硬件结构决定的，不是设计偏好。</b></p>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 12 解码原理 ============ -->
+<section class="slide" data-notes="【口播】这页讲解码，也就是第五步：<em>MP3 和 FLAC 到底是怎么把音频压小的，解码又是在做什么。</em><br>
+先给个参照：未压缩的 CD 品质 PCM 是每秒 176KB。<em>一首四分钟的歌就是 42MB</em>，这显然不现实，所以必须压缩。<br>
+压缩分两条完全不同的思路。<br>
+<em>MP3 走的是有损压缩，核心是心理声学模型。</em>它的出发点很聪明：既然最终是给人听的，那人听不到的部分，干脆就别存了。具体利用两个人耳特性：一是<em>听觉掩蔽</em>，一个强音会把邻近频率的弱音完全盖住，被盖住的部分直接丢弃，你根本察觉不到；二是<em>频率敏感度不均</em>，人对 2 到 5kHz 最敏感，对很低和很高的频率不敏感，那不敏感的频段就用更粗的量化。这样能做到大约 10 比 1 的压缩比。<em>代价是数据真的丢了，不可逆。</em><br>
+<em>FLAC 走的是无损压缩，思路完全不同，它更像 zip。</em>核心方法叫线性预测：用前面几个样本去预测下一个样本该是多少，然后只存储「预测值和真实值的差」。因为音频波形是连续变化的，预测通常很准，差值就很小，小数字用更少的比特就能存下。解码的时候用同样的预测算法加上差值，就能<em>一位不差地还原原始 PCM</em>。压缩比大约 2 比 1。<br>
+<em>但请注意这一页最重要的一句话：这两种格式，解码之后都是 PCM，而且是完全相同的数据结构。</em>所以往后的链路 —— 缓冲、DMA、I2S、功放、喇叭 —— 一个字节都不用改。<em>解码器就是一个格式适配层，把各种包装拆掉，还原成链路唯一认识的那种数据。</em>">
+  <div class="eyebrow">Principle · 解码</div>
+  <h2>MP3 和 FLAC 是怎么把音频压小的</h2>
+  <p class="sub">两条完全不同的思路 —— 但解码之后，都回到同一种 PCM</p>
+  <div class="slide-body top">
+    <div class="card" style="background:var(--surface-3);margin-bottom:16px">
+      <p style="font-size:14.5px"><b style="color:var(--warn)">为什么必须压缩：</b>
+      未压缩 CD 品质 PCM = <b style="color:var(--text-primary)">176 KB/s</b> →
+      一首 4 分钟的歌约 <b style="color:var(--crit)">42 MB</b>。对嵌入式设备和网络传输都不现实。</p>
+    </div>
+
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>MP3 · 有损：心理声学模型</h3>
+        <p style="margin-bottom:11px">出发点：<b style="color:var(--text-primary)">既然最终是给人听的，人听不到的部分就别存</b>。</p>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:104px">听觉掩蔽</td>
+              <td>强音会盖住邻近频率的弱音 → <b style="color:var(--text-primary)">被盖住的直接丢弃</b>，人无法察觉</td></tr>
+          <tr><td class="k">敏感度不均</td>
+              <td>人对 2–5kHz 最敏感 → <b style="color:var(--text-primary)">不敏感频段用更粗的量化</b></td></tr>
+        </table>
+        <div class="formula" style="margin-top:11px">压缩比 ≈ <b style="color:var(--s2)">10 : 1</b><br>
+          <span style="color:var(--crit)">数据真的丢了，不可逆</span></div>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>FLAC · 无损：线性预测</h3>
+        <p style="margin-bottom:11px">出发点：<b style="color:var(--text-primary)">音频波形是连续变化的，所以可以被预测</b>。思路更接近 zip。</p>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:104px">线性预测</td>
+              <td>用前几个样本预测下一个，<b style="color:var(--text-primary)">只存预测值与真实值的差</b></td></tr>
+          <tr><td class="k">残差编码</td>
+              <td>预测通常很准 → 差值很小 → <b style="color:var(--text-primary)">小数字用更少比特存</b></td></tr>
+        </table>
+        <div class="formula" style="margin-top:11px">压缩比 ≈ <b style="color:var(--s3)">2 : 1</b><br>
+          <span style="color:var(--good)">可一位不差地还原原始 PCM</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--s1)">
+      <h3 style="color:var(--s1)">本页最重要的一句：两种格式解码后是完全相同的数据结构</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px;line-height:1.85">MP3  ──┐
+       ├──→ <span class="hl">解码器</span> ──→ <span class="s">PCM（16bit 整数序列）</span> ──→ 缓冲 → DMA → I2S → 功放 → 喇叭
+FLAC ──┘                                        <span class="c">↑ 这后面一个字节都不用改</span></pre>
+      <p style="margin-top:12px;font-size:14.5px"><b style="color:var(--s3)">所以解码器的本质是「格式适配层」</b> ——
+      把各种包装拆掉，还原成整条链路唯一认识的那种数据。
+      <span style="color:var(--text-muted)">这也是为什么加一种新格式，只需要换解码器，其余部分完全不动。</span></p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 13 DMA 原理 ============ -->
+<section class="slide" data-notes="【口播】这页讲 DMA，我认为是这一期原理里最容易被跳过、但最能解释「为什么这台设备能同时干这么多事」的一块。<br>
+先问一个问题：<em>一秒钟要送出 44100 个样本，如果让 CPU 一个一个往外送，会怎样？</em><br>
+那 CPU 每秒要被打断 44100 次，每次只送 2 个字节。而且这些打断必须极其准时 —— 晚了就断音。<em>结果就是 CPU 几乎什么别的事都干不了</em>，更别说同时刷新屏幕、解码下一段音频、跑网络协议栈了。<br>
+<em>DMA 就是为了解决这个问题存在的：直接内存访问。</em>它是一个独立于 CPU 的硬件搬运工。<br>
+工作方式是这样：CPU 事先在内存里划出一块缓冲区，把 PCM 数据填进去，然后告诉 DMA 控制器「这块内存归你了，按 I2S 的时钟节奏往外送」。<em>之后 CPU 就完全不管了。</em>DMA 控制器自己从内存取数据，交给 I2S 外设，I2S 外设按精确时钟串行送到引脚上。整个过程 CPU 一次都不用参与。<br>
+CPU 唯一要做的事，是<em>在缓冲区快空的时候再填一批进去</em>。而缓冲区有 185 毫秒的存量，也就是说，<em>CPU 每 185 毫秒管一次就够了，剩下的时间完全自由。</em><br>
+<em>这就是整个系统的核心原理：CPU 负责「填」，硬件负责「送」，两者解耦。</em>正因为解耦了，CPU 才腾得出手去刷屏幕、算频谱、跑网络。<em>而且送出的节奏由硬件时钟保证，跟 CPU 忙不忙完全无关</em> —— 这也是声音能保持稳定的根本原因。">
+  <div class="eyebrow">Principle · DMA</div>
+  <h2>为什么放着歌还能同时刷屏幕</h2>
+  <p class="sub">因为「填数据」和「送数据」被彻底解耦了 —— CPU 负责填，硬件负责送</p>
+  <div class="slide-body">
+    <div class="grid2" style="margin-bottom:18px">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">如果让 CPU 逐样本往外送</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:120px">打断频率</td><td><b style="color:var(--text-primary)">每秒 44100 次</b>，每次只送 2 字节</td></tr>
+          <tr><td class="k">时序要求</td><td>每次都必须<b style="color:var(--text-primary)">极其准时</b>，晚一点就断音</td></tr>
+          <tr><td class="k">结果</td><td style="color:var(--crit)">CPU 几乎干不了别的事</td></tr>
+        </table>
+        <p style="margin-top:11px">更别说同时刷新屏幕、解码下一段、跑网络协议栈 —— <b style="color:var(--text-primary)">全部做不到</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">DMA · 直接内存访问</h3>
+        <p style="margin-bottom:11px">一个<b style="color:var(--text-primary)">独立于 CPU 的硬件搬运工</b>。CPU 只需要交代一次任务，之后完全不管。</p>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:120px">CPU 做的</td><td>在内存划一块缓冲区，填入 PCM</td></tr>
+          <tr><td class="k">DMA 做的</td><td>自己从内存取数，交给 I2S 外设</td></tr>
+          <tr><td class="k">I2S 做的</td><td>按精确时钟串行送到引脚</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="background:var(--surface-3);border-color:var(--s1)">
+      <h3 style="color:var(--s1)">解耦之后的分工</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px;line-height:1.85">      <span class="k">CPU（解码任务）</span>                    <span class="s">硬件（DMA + I2S 外设）</span>
+            │                                      │
+            │  每 ~185ms 填一次                      │  持续、恒速、自动
+            ▼                                      ▼
+   ┌──────────────────────────────────┐
+   │   <span class="hl">DMA 缓冲区（16 块，约 185ms）</span>      │ ──→ BCLK / LRC / DIN ──→ 功放
+   └──────────────────────────────────┘
+      <span class="c">↑ CPU 只在这里出现</span>              <span class="c">↑ 节奏由硬件时钟保证，与 CPU 忙闲无关</span></pre>
+      <div class="grid2" style="gap:16px;margin-top:14px">
+        <p style="font-size:14px"><b style="color:var(--s3)">腾出的时间去哪了：</b>
+        CPU 每 185ms 才需要管一次音频，其余时间完全自由 ——
+        <b style="color:var(--text-primary)">用来刷屏幕、算频谱、跑网络、解下一段音频</b>。</p>
+        <p style="font-size:14px"><b style="color:var(--s3)">声音为什么稳定：</b>
+        送出的节奏由<b style="color:var(--text-primary)">硬件时钟</b>决定，<b style="color:var(--good)">跟 CPU 忙不忙完全无关</b>。
+        CPU 卡一下，只要缓冲没空，声音就不受影响。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 14 音频时间轴 ============ -->
+<section class="slide" data-notes="【口播】这页讲一个衍生的原理，用来回答演示时我让你留意的第二件事：<em>歌词是怎么跟人声严格对齐的。</em><br>
+歌词文件里每一句都带一个时间戳，比如「一分二十三秒，某某句」。所以显示逻辑很简单：<em>拿到「当前播放到第几秒」，去歌词表里查该显示哪一行。</em><br>
+问题就变成：<em>「当前播放到第几秒」这个数，从哪里来？</em><br>
+最直觉的答案是用系统时钟：开始播放时记一个时间点，之后用当前时间减去它。<em>但这是错的，而且错在一个很根本的地方。</em><br>
+系统时钟测量的是「墙上的时间」，而我们要的是「声音走过的时间」。<em>这两者只有在「声音一直在连续播放」的前提下才相等。</em>而这个前提经常不成立：缓冲空了、解码被抢占、用户按了暂停 —— 这些时候声音停了，但墙上的时钟一直在走。误差就这样一点点累积，而且<em>没有任何机制让它回正</em>。<br>
+<em>正确的原理是：直接测量「声音走过的时间」，而声音走了多远，是有物理刻度的 —— 就是已经送进 I2S 的样本数。</em><br>
+因为 I2S 严格按 44100 每秒消费样本，所以送出去 44100 个样本，就是精确地走过了 1 秒，一个不多一个不少。缓冲空了？那段时间样本数就不增加，时间自然停住。暂停了？不送样本，时钟自动停。<em>连补偿逻辑都不需要写，因为这个时钟本身就是从声音里长出来的。</em><br>
+<em>这是一个很通用的思想：不要用外部时钟去猜测一个过程的进度，而要在过程内部找到一个天然的刻度。</em>">
+  <div class="eyebrow">Principle · 时间轴</div>
+  <h2>「播放到第几秒」这个数从哪来</h2>
+  <p class="sub">不要用外部时钟猜测进度 —— 要在过程内部找到天然的刻度</p>
+  <div class="slide-body">
+    <div class="card" style="background:var(--surface-3);margin-bottom:16px">
+      <p style="font-size:14.5px"><b style="color:var(--s3)">歌词显示的逻辑很简单：</b>
+      歌词文件每句自带时间戳 → 拿到「当前播放到第几秒」→ 查表定位当前行。
+      <b style="color:var(--warn)">全部难度都在「当前播放到第几秒」这一个数上。</b></p>
+    </div>
+
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">用系统时钟：测的是「墙上的时间」</h3>
+        <div class="formula" style="margin-bottom:11px">位置 = 当前时刻 − 开始播放的时刻</div>
+        <p style="margin-bottom:11px">这个式子成立的<b style="color:var(--text-primary)">隐含前提</b>是：声音一直在连续播放。
+        <b style="color:var(--crit)">而这个前提经常不成立。</b></p>
+        <table style="font-size:13px">
+          <tr><td class="k" style="width:106px">缓冲空了</td><td>声音停了，墙钟照走</td></tr>
+          <tr><td class="k">解码被抢占</td><td>声音停了，墙钟照走</td></tr>
+          <tr><td class="k">用户暂停</td><td>声音停了，墙钟照走</td></tr>
+        </table>
+        <p style="margin-top:11px"><b style="color:var(--crit)">误差单向累积，没有任何回正机制</b> —— 歌词会越走越靠前。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">数样本：测的是「声音走过的时间」</h3>
+        <div class="formula" style="margin-bottom:11px">位置 = 已送入 I2S 的样本数 ÷ 采样率</div>
+        <p style="margin-bottom:11px">因为 I2S <b style="color:var(--text-primary)">严格按 44100 样本/秒</b>消费，
+        所以样本数<b style="color:var(--good)">本身就是一把物理刻度尺</b>。</p>
+        <table style="font-size:13px">
+          <tr><td class="k" style="width:106px">缓冲空了</td><td>样本不增加 → <b style="color:var(--good)">时间自然停住</b></td></tr>
+          <tr><td class="k">解码被抢占</td><td>样本不增加 → <b style="color:var(--good)">时间自然停住</b></td></tr>
+          <tr><td class="k">用户暂停</td><td>不送样本 → <b style="color:var(--good)">时钟自动停</b></td></tr>
+        </table>
+        <p style="margin-top:11px"><b style="color:var(--good)">连补偿逻辑都不需要写</b> —— 这个时钟是从声音里长出来的。</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--s1)">
+      <p style="font-size:14.5px"><b style="color:var(--s1)">这是一个可以迁移的通用思想：</b>
+      当你需要知道某个过程的进度时，<b style="color:var(--text-primary)">不要用外部时钟去推算</b>，
+      而要去找这个过程<b style="color:var(--text-primary)">内部有没有一个天然的、单调增长的刻度</b>。
+      找到了，进度就永远不会漂。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 15 频谱原理 ============ -->
+<section class="slide" data-notes="【口播】最后一块原理：<em>屏幕下面那十六条跳动的柱子，是怎么从声音里变出来的。</em><br>
+先明确输入是什么。我们手上有的是 PCM，也就是<em>一串随时间变化的振幅值</em>，这叫时域信号。它能告诉你「第几毫秒振膜在哪」，但完全看不出「低音重不重、高音亮不亮」。<br>
+而频谱要展示的恰恰是后者。所以需要一次变换：<em>从时域到频域。</em>这个变换就是傅里叶变换。<br>
+它的核心思想其实非常朴素：<em>任何一段复杂的波形，都可以分解成一堆不同频率的正弦波的叠加。</em>傅里叶变换做的事，就是告诉你每一个频率的正弦波，在这段波形里占了多少分量。分量大，就是这个频率的能量强。<br>
+实际用的是 FFT，快速傅里叶变换，本质是同一件事，只是算法上快得多。<br>
+具体到这个项目：<em>每次取 256 个样本做一次变换，输出是 128 个频率格子</em>，每个格子代表一个频率区间的能量。格子的宽度是有公式的：采样率除以点数。这里的有效采样率大约 11kHz，除以 256，每个格子大约 43 赫兹，128 个格子覆盖到大约 5kHz —— 正好是音乐能量最集中的区域。<br>
+最后一步是把 128 个格子并成 16 条柱子。<em>这里有个原理性的选择：不能平均分，要按对数分组。</em>因为人耳对频率的感知本身就是对数的 —— 从 100Hz 到 200Hz 和从 1000Hz 到 2000Hz，你听起来都是「升高了一个八度」，虽然前者只差 100Hz，后者差了 1000Hz。<em>所以低频那几条柱子要分得窄，高频分得宽，这样看起来才符合听感。</em>">
+  <div class="eyebrow">Principle · 频谱</div>
+  <h2>跳动的柱子是怎么从声音里变出来的</h2>
+  <p class="sub">核心思想：任何复杂波形，都能分解成一堆不同频率正弦波的叠加</p>
+  <div class="slide-body top">
+    <div class="grid2" style="margin-bottom:16px">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>输入：时域信号</h3>
+        <p style="margin-bottom:10px">我们手上的 PCM 是<b style="color:var(--text-primary)">一串随时间变化的振幅值</b>。</p>
+        <div class="formula">能回答：第几毫秒振膜在哪<br>
+          <span style="color:var(--crit)">回答不了：低音重不重、高音亮不亮</span></div>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>输出：频域信号</h3>
+        <p style="margin-bottom:10px">频谱要展示的正是<b style="color:var(--text-primary)">各频率的能量分布</b>。</p>
+        <div class="formula">需要一次变换：<b style="color:var(--s3)">时域 → 频域</b><br>
+          <span style="color:var(--text-muted)">这个变换叫傅里叶变换</span></div>
+      </div>
+    </div>
+
+    <div class="card" style="border-color:var(--warn);margin-bottom:16px">
+      <h3 style="color:var(--warn)">傅里叶变换的核心思想</h3>
+      <p style="margin-top:4px;font-size:14.5px">
+      <b style="color:var(--text-primary)">任何一段复杂波形，都可以分解成一堆不同频率的正弦波的叠加。</b>
+      傅里叶变换做的事，就是告诉你<b style="color:var(--s3)">每个频率的正弦波在这段波形里占了多少分量</b> ——
+      分量大，就是这个频率的能量强。<span style="color:var(--text-muted)">（FFT 是它的快速算法，本质是同一件事。）</span></p>
+    </div>
+
+    <div class="grid3">
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s1)"></span>① 取一窗样本</h3>
+        <div class="formula" style="font-size:12.5px">每次取 <b style="color:var(--s1)">256</b> 个样本<br>
+          → 输出 <b style="color:var(--s1)">128</b> 个频率格子</div>
+        <p style="margin-top:10px;font-size:13px">每个格子代表一个频率区间的能量。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s4)"></span>② 格子宽度有公式</h3>
+        <div class="formula" style="font-size:12.5px">宽度 = 采样率 ÷ 点数<br>
+          ≈ 11 kHz ÷ 256<br>
+          = <b style="color:var(--s4)">约 43 Hz / 格</b></div>
+        <p style="margin-top:10px;font-size:13px">128 格覆盖到约 5kHz —— <b style="color:var(--text-primary)">音乐能量最集中的区域</b>。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s3)">
+        <h3 style="color:var(--s3)">③ 并成 16 条柱：按对数分组</h3>
+        <p style="font-size:13px;margin-bottom:9px"><b style="color:var(--text-primary)">不能平均分</b>，因为人耳对频率的感知本身就是对数的。</p>
+        <div class="formula" style="font-size:12px">100→200 Hz　差 100 Hz<br>1000→2000 Hz 差 1000 Hz<br>
+          <span style="color:var(--good)">听起来都是「升高一个八度」</span></div>
+      </div>
+    </div>
+    <p style="margin-top:14px;font-size:14px;color:var(--text-secondary)"><b style="color:var(--warn)">所以低频柱分得窄、高频柱分得宽</b> —— 这样柱子的视觉分布，才和人耳实际听到的频率分布一致。</p>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 16 显示链路：颜色与传输 ============ -->
+<section class="slide" data-notes="【口播】音频讲完了，现在换一条链路：<em>画面是怎么显示出来的。</em><br>
+先说屏幕这一侧。这块 2.8 寸屏上有 320 乘 240 个像素点，每个点能独立发出不同颜色的光。<em>但屏幕本身是「没有记忆能力」的吗？不是</em> —— 屏幕上有一颗控制器芯片，叫 ST7789，它自带一块显存。ESP32 要做的事，就是<em>把像素数据写进这块显存</em>，控制器会自动、持续地把显存内容刷到屏幕上。<br>
+<em>所以显示的本质是：往一块远端的内存里写数据。</em>这跟音频完全不同 —— 音频是「流」，必须准时；显示是「写」，写进去就一直显示着，不写就保持原样。<em>这个差别决定了后面所有的优化策略。</em><br>
+接下来是颜色怎么编码。每个像素要表达红绿蓝三个分量。<em>这里用的是 RGB565</em>：红色 5 位，绿色 6 位，蓝色 5 位，一共 16 位，也就是 2 个字节。<br>
+<em>为什么绿色多给一位？</em>因为人眼的视锥细胞对绿光最敏感，绿色的分辨能力天然比红蓝强。<em>把这多出来的一位给绿色，视觉上的收益最大。</em>这跟前面 MP3 利用听觉特性压缩，是完全同一个思路 —— <em>都是把有限的比特，优先分配给感官最敏感的地方。</em><br>
+最后是怎么传。用的是 SPI，四根线：数据线、时钟线、片选、还有一根命令数据选择线。<em>注意 SPI 跟 I2S 的根本区别：SPI 不要求等时性。</em>你早写晚写都行，画面只是早点变或晚点变，不会像音频那样「变调」或者「爆音」。">
+  <div class="eyebrow">Principle · 显示</div>
+  <h2>画面是怎么显示出来的</h2>
+  <p class="sub">显示的本质是「往一块远端内存里写数据」—— 这跟音频的「流」完全不同</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>屏幕侧：控制器自带显存</h3>
+        <p style="margin-bottom:10px">屏幕上有一颗 <b style="color:var(--text-primary)">ST7789 控制器</b>，自带一块显存。它会<b style="color:var(--text-primary)">自动、持续</b>地把显存内容刷到面板上。</p>
+        <div class="formula" style="line-height:1.9">ESP32 只需<b style="color:var(--s1)">把像素写进显存</b><br>
+          写进去 → 一直显示着<br>
+          不写 → <b style="color:var(--good)">保持原样，零开销</b></div>
+        <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--warn)">与音频的根本差别：</b>
+        音频是<b style="color:var(--text-primary)">流</b>，必须准时、必须连续；显示是<b style="color:var(--text-primary)">写</b>，写完就静止。
+        <span style="color:var(--text-muted)">这个差别决定了下一页所有的优化策略。</span></p>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>颜色编码：RGB565</h3>
+        <p style="margin-bottom:10px">每个像素 <b style="color:var(--text-primary)">16 位 = 2 字节</b>，红绿蓝分配不均：</p>
+        <pre style="background:var(--surface-3);font-size:12.5px;line-height:1.9">┌─────────┬───────────┬─────────┐
+│ <span class="k">R : 5 bit</span> │ <span class="s">G : 6 bit</span> │ <span class="k">B : 5 bit</span> │
+└─────────┴───────────┴─────────┘
+   32 级       <span class="hl">64 级</span>       32 级</pre>
+        <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--s3)">为什么绿色多给一位：</b>
+        人眼视锥细胞对<b style="color:var(--text-primary)">绿光最敏感</b>，分辨能力天然更强 ——
+        多出来的这一位给绿色，<b style="color:var(--good)">视觉收益最大</b>。</p>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card" style="background:var(--surface-3);border-color:var(--warn)">
+        <h3 style="color:var(--warn)">这和 MP3 是同一个思路</h3>
+        <p style="font-size:13.5px">MP3 把比特优先给<b style="color:var(--text-primary)">人耳最敏感的 2–5kHz</b>；<br>
+        RGB565 把比特优先给<b style="color:var(--text-primary)">人眼最敏感的绿色</b>。</p>
+        <p style="margin-top:9px;font-size:13.5px"><b style="color:var(--s3)">通用原则：把有限的比特，优先分配给感官最敏感的地方。</b></p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s2)">
+        <h3 style="color:var(--s2)">传输：SPI，且不要求等时性</h3>
+        <table style="margin-top:4px;font-size:12.5px">
+          <tr><td class="k" style="width:66px"><code>MOSI</code></td><td>数据线，串行送像素</td></tr>
+          <tr><td class="k"><code>SCLK</code></td><td>时钟线</td></tr>
+          <tr><td class="k"><code>CS</code></td><td>片选，告诉屏「在跟你说话」</td></tr>
+          <tr><td class="k"><code>DC</code></td><td>区分这一字节是<b style="color:var(--text-primary)">命令</b>还是<b style="color:var(--text-primary)">数据</b></td></tr>
+        </table>
+        <p style="margin-top:10px;font-size:13px"><b style="color:var(--good)">早写晚写都行</b> —— 画面只是早点变或晚点变，
+        不会像音频那样变调或爆音。</p>
+      </div>
+    </div>
+    <div class="figure" style="margin-top:14px;min-height:66px">
+      <span class="fig-tag">配图 07 · 屏幕微距</span>
+      <span class="fig-desc">屏幕显示画面的微距特写，能看清 RGB 子像素排列；可并列一张屏幕背面 ST7789 控制器排线的照片</span>
+      <span class="fig-hint">微距镜头 / 横构图 / 体现「像素是由 RGB 三色组成的」</span>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 17 局部刷新 ============ -->
+<section class="slide" data-notes="【口播】这页回答演示时我让你留意的第四件事：<em>为什么画面只有局部在动。</em><br>
+先算一笔账。整屏 320 乘 240 等于 76800 个像素，每个像素 2 字节，<em>一整屏就是 150KB。</em><br>
+SPI 的时钟频率决定了传输速度。就算按比较高的速率算，把这 150KB 全部推过去也要几十毫秒。<em>如果每一帧都全屏重画，帧率会低到肉眼能看出闪烁</em>，而且这段时间 SPI 总线被完全占满，别的事都做不了。<br>
+<em>但注意上一页讲的那个性质：显存写进去就一直保持着。</em>这意味着 —— <em>没变化的地方，根本不需要重写。</em><br>
+所以策略就很清楚了：<em>只重画真正变化的那一小块。</em><br>
+看这个表，播放页上每个元素的变化频率完全不同：封面和歌名只在切歌时变，那就切歌时才画；歌词几秒才滚一行；进度条每秒变一次，那就只重画进度条那几个像素高的长条；频谱柱每帧都在变，但它只占屏幕底部一小条，而且可以只补柱子高度变化的那一小段。<br>
+<em>这就是为什么频谱在疯狂跳动的时候，上面的封面纹丝不动 —— 不是它不需要更新，是它压根没被重画。</em><br>
+把这个原理提炼一下：<em>当传输带宽是瓶颈的时候，最有效的优化永远不是「传得更快」，而是「少传一点」。</em>而要做到少传，前提是你得知道「哪些没变」—— 所以这类系统里总是伴随着一堆「脏标记」和「上一帧值」的缓存。">
+  <div class="eyebrow">Principle · 局部刷新</div>
+  <h2>为什么画面只有局部在动</h2>
+  <p class="sub">因为显存写进去就保持着 —— 没变化的地方，根本不需要重写</p>
+  <div class="slide-body top">
+    <div class="grid3">
+      <div class="stat"><div class="label">整屏像素数</div><div class="value" style="font-size:29px">76,800</div><div class="note">320 × 240</div></div>
+      <div class="stat"><div class="label">每像素</div><div class="value" style="color:var(--s3)">2<span class="unit">字节</span></div><div class="note">RGB565</div></div>
+      <div class="stat"><div class="label">整屏一帧数据量</div><div class="value" style="color:var(--crit)">150<span class="unit">KB</span></div><div class="note">全量推送要几十毫秒</div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px;border-color:var(--warn)">
+      <h3 style="color:var(--warn)">如果每帧都全屏重画</h3>
+      <p style="margin-top:4px">帧率低到<b style="color:var(--text-primary)">肉眼能看出闪烁</b>，而且这段时间 <b style="color:var(--text-primary)">SPI 总线被完全占满</b>，别的事都做不了。
+      <b style="color:var(--good)">但显存的特性给了另一条路：没变的地方不用重写。</b></p>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>分层刷新：每个元素按自己的节奏重画</h3>
+      <table style="margin-top:6px;font-size:13px">
+        <tr><th style="width:170px">元素</th><th style="width:140px">变化频率</th><th>重绘范围</th></tr>
+        <tr><td class="k">封面 / 歌名 / 歌手</td><td>切歌时</td><td>切歌才整块重画 —— <b style="color:var(--good)">平时完全不动</b></td></tr>
+        <tr><td class="k">歌词行</td><td>每几秒</td><td>只重画发生变化的那一行</td></tr>
+        <tr><td class="k">进度条 / 时间</td><td>每秒</td><td>只填一条几像素高的细长矩形</td></tr>
+        <tr><td class="k">频谱柱</td><td>每帧</td><td>逐柱比对高度，<b style="color:var(--text-primary)">只补差值那一小段</b></td></tr>
+      </table>
+      <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--s3)">所以频谱疯狂跳动时，上面的封面纹丝不动</b> ——
+      不是它不需要更新，<b style="color:var(--text-primary)">是它压根没被重画</b>。</p>
+    </div>
+
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--s1)">
+      <p style="font-size:14.5px"><b style="color:var(--s1)">可迁移的原则：</b>
+      当<b style="color:var(--text-primary)">传输带宽是瓶颈</b>时，最有效的优化永远不是「传得更快」，而是<b style="color:var(--s3)">「少传一点」</b>。
+      而要少传，前提是知道「哪些没变」—— 所以这类系统里总是伴随着一堆<b style="color:var(--text-primary)">脏标记和「上一帧值」的缓存</b>。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 18 输入链路 ============ -->
+<section class="slide" data-notes="【口播】最后一条链路：<em>你的操作，是怎么被芯片识别到的。</em><br>
+这里有两种截然不同的输入，值得对比着讲。<br>
+<em>先说按键，它是数字输入。</em>原理很简单：引脚上启用一个内部上拉电阻，平时把电平拉到高；你按下按键，就把引脚直接接到地，电平变低。所以芯片读回来的只有两种值 —— 高或低，1 或 0。<br>
+<em>但这里有个物理现象必须处理：抖动。</em>按键内部是两片金属簧片，按下的瞬间它们不是干净地一次接触，而是会在几毫秒内快速地弹跳、接触、断开好几次。<em>芯片的读取速度远快于这个过程，所以它会看到一连串的高低跳变</em>，误以为你连按了好几下。<br>
+解法叫消抖：<em>检测到电平变化后，先不认，等 20 毫秒，如果电平还稳定在新状态，才算数。</em>本质上是用一个时间窗口，把物理上的不确定性滤掉。<br>
+<em>再说摇杆，它是模拟输入，原理完全不同。</em>摇杆里面其实是两个可变电阻，X 轴一个，Y 轴一个。<em>它们各自构成一个分压电路</em> —— 你推动摇杆，滑动触点位置改变，分压比就改变，输出电压跟着变。所以摇杆输出的不是 0 和 1，<em>而是一个连续变化的电压。</em><br>
+芯片这边用 ADC 把这个电压转成数字，得到 0 到 4095 的读数。<em>摇杆居中时大约是 2048，也就是一半。</em><br>
+那怎么判断方向？设一个阈值，读数低于某个值算一个方向，高于另一个值算反方向，中间是死区不响应。<em>为什么要有死区？因为摇杆机械上不可能精确回到正中，ADC 本身也有噪声</em> —— 没有死区的话，摇杆放着不动都会一直触发。<br>
+<em>这两种输入的对比，其实揭示了数字和模拟世界的根本差异：数字输入的麻烦在于「时间上的不确定」，要用时间窗口解决；模拟输入的麻烦在于「数值上的不确定」，要用数值区间解决。</em>">
+  <div class="eyebrow">Principle · 输入</div>
+  <h2>你的操作，怎么被芯片识别到</h2>
+  <p class="sub">按键是数字输入，摇杆是模拟输入 —— 两者的原理和麻烦完全不同</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>按键 · 数字输入</h3>
+        <p style="margin-bottom:10px">引脚启用<b style="color:var(--text-primary)">内部上拉电阻</b>，平时电平为高；按下时引脚直接接地，电平变低。</p>
+        <div class="formula" style="line-height:1.85">未按下 → 上拉 → <b style="color:var(--s1)">读回 1</b><br>
+          按&nbsp;下&nbsp; → 接地 → <b style="color:var(--s1)">读回 0</b><br>
+          <span style="color:var(--text-muted)">芯片只能读到这两种值</span></div>
+        <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--warn)">物理上的麻烦：抖动。</b>
+        按键内部是两片金属簧片，按下瞬间会在几毫秒内<b style="color:var(--text-primary)">快速弹跳、接触、断开好几次</b>。
+        芯片读取速度远快于此，会看到<b style="color:var(--crit)">一连串高低跳变</b>，误判为连按多次。</p>
+      </div>
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>摇杆 · 模拟输入</h3>
+        <p style="margin-bottom:10px">摇杆内部是<b style="color:var(--text-primary)">两个可变电阻</b>（X 轴、Y 轴各一个），各自构成一个<b style="color:var(--text-primary)">分压电路</b>。</p>
+        <pre style="background:var(--surface-3);font-size:12px;line-height:1.8">3V3 ──[电阻上半]──┬──[电阻下半]── GND
+                  │
+              <span class="hl">滑动触点</span> → 输出电压
+   <span class="c">推动摇杆 → 触点位置变 → 分压比变 → 电压变</span></pre>
+        <p style="margin-top:11px;font-size:13.5px">输出的<b style="color:var(--text-primary)">不是 0 和 1，而是连续变化的电压</b>。
+        芯片用 <b style="color:var(--s2)">ADC</b> 把它转成 <b style="color:var(--text-primary)">0 ~ 4095</b> 的读数，居中时约 <b style="color:var(--warn)">2048</b>。</p>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card" style="background:var(--surface-3);border-color:var(--s1)">
+        <h3 style="color:var(--s1)">数字输入的解法：时间窗口（消抖）</h3>
+        <p style="font-size:13.5px">检测到电平变化后<b style="color:var(--text-primary)">先不认</b>，等约 <b style="color:var(--good)">20ms</b>；
+        若电平仍稳定在新状态，才算一次有效动作。</p>
+        <p style="margin-top:9px;font-size:13.5px"><b style="color:var(--text-primary)">本质：用一个时间窗口，把物理上的不确定性滤掉。</b></p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s2)">
+        <h3 style="color:var(--s2)">模拟输入的解法：数值区间（死区）</h3>
+        <p style="font-size:13.5px">读数低于下阈值算一个方向，高于上阈值算反方向，<b style="color:var(--text-primary)">中间一段是死区，不响应</b>。</p>
+        <p style="margin-top:9px;font-size:13.5px"><b style="color:var(--warn)">为什么必须有死区：</b>摇杆机械上<b style="color:var(--text-primary)">不可能精确回到正中</b>，ADC 本身也有噪声 ——
+        没有死区，摇杆放着不动都会一直触发。</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--warn)">
+      <p style="font-size:14.5px"><b style="color:var(--warn)">两者的对比揭示了数字与模拟世界的根本差异：</b>
+      数字输入的麻烦是<b style="color:var(--text-primary)">「时间上的不确定」</b>，用<b style="color:var(--s1)">时间窗口</b>解决；
+      模拟输入的麻烦是<b style="color:var(--text-primary)">「数值上的不确定」</b>，用<b style="color:var(--s2)">数值区间</b>解决。</p>
+    </div>
+    <div style="margin-top:12px;display:grid;grid-template-columns:210px 1fr;gap:16px;align-items:center">
+      <figure style="margin:0">
+        <img src="images/fig-08.png" alt="摇杆模块特写"
+             style="width:100%;height:124px;object-fit:cover;object-position:38% center;
+                    display:block;border-radius:var(--radius);border:1px solid var(--rule)">
+      </figure>
+      <div>
+        <p style="font-size:13.5px;margin:0 0 7px"><b style="color:var(--s2)">整台设备就靠这一个摇杆操作：</b></p>
+        <table style="font-size:12.5px">
+          <tr><td class="k" style="width:64px">左 / 右</td>
+              <td>切换页面 —— 播放页 · 歌词页 · 频谱页循环，最左退回应用菜单</td></tr>
+          <tr><td class="k">上 / 下</td>
+              <td>播放页切上下一首；频谱页则是<b style="color:var(--text-primary)">调音量</b>（音量条就在该页）</td></tr>
+          <tr><td class="k">按下</td>
+              <td>确定 / 进入选中的应用</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 19 双核分工 ============ -->
+<section class="slide" data-notes="【口播】三条链路都讲完了，还有最后一个结构性的原理：<em>这些活是怎么在一颗芯片上同时跑起来的。</em><br>
+ESP32-S3 是双核的。<em>而分核的原则，不是「按链路分」，是按「对延迟的容忍度」分。</em><br>
+把所有任务放在一起看，它们分成截然不同的两类。<br>
+<em>第一类是实时型：不能卡。</em>屏幕刷新和摇杆扫描都属于这一类。界面一卡，用户立刻就能看见；摇杆扫描慢了，你会觉得「这破玩意反应真迟钝」。<em>这类任务的特点是「每次工作量都很小，但必须频繁、准时地执行」。</em><br>
+<em>第二类是吞吐型：允许慢，但要把活干完。</em>音频解码属于这类，网络请求也属于这类。特点正好相反：<em>「单次工作量大、耗时不确定，但晚一点没关系」</em> —— 因为前面讲过，DMA 缓冲有 185 毫秒的存量，解码晚个几十毫秒完全无感。<br>
+<em>把这两类混在一个核上，结果是可预测的：吞吐型任务一旦开始长时间占用 CPU，实时型任务就会被推迟。</em>具体表现就是解码复杂音频的时候，屏幕明显卡顿、摇杆推了半天没反应。<br>
+所以做法是物理隔离：<em>实时型的钉在 core 1，吞吐型的钉在 core 0。</em>两类任务在物理上就不会互相抢。<br>
+<em>这个原则的一般形式是：并发设计的第一刀，应该按「延迟敏感度」切，而不是按功能模块切。</em>">
+  <div class="eyebrow">Principle · 并发</div>
+  <h2>三条链路怎么在一颗芯片上同时跑</h2>
+  <p class="sub">分核的第一刀，要按「对延迟的容忍度」切，而不是按功能模块切</p>
+  <div class="slide-body">
+    <div class="grid2" style="margin-bottom:18px">
+      <div class="card" style="border-color:var(--s3)">
+        <h3 style="color:var(--s3)"><span class="dot" style="background:var(--s3)"></span>实时型 · 不能卡 → core 1</h3>
+        <p style="margin-bottom:11px">特点：<b style="color:var(--text-primary)">单次工作量小，但必须频繁、准时地执行</b>。</p>
+        <table style="font-size:13px">
+          <tr><td class="k" style="width:96px">屏幕刷新</td><td>卡了<b style="color:var(--text-primary)">用户立刻看得见</b></td></tr>
+          <tr><td class="k">摇杆 / 按键扫描</td><td>慢了就是「反应迟钝」</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">这类任务的价值<b style="color:var(--text-primary)">完全建立在「及时」上</b> —— 晚了就等于没做。</p>
+      </div>
+      <div class="card" style="border-color:var(--s1)">
+        <h3 style="color:var(--s1)"><span class="dot" style="background:var(--s1)"></span>吞吐型 · 允许慢 → core 0</h3>
+        <p style="margin-bottom:11px">特点：<b style="color:var(--text-primary)">单次工作量大、耗时不确定，但晚一点没关系</b>。</p>
+        <table style="font-size:13px">
+          <tr><td class="k" style="width:96px">音频解码</td><td>有 <b style="color:var(--good)">185ms 缓冲兜底</b>，晚几十毫秒无感</td></tr>
+          <tr><td class="k">网络请求</td><td>拉歌单、取直链，本就是秒级的事</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">这类任务的价值建立在<b style="color:var(--text-primary)">「把活干完」</b>上，而不是「什么时候干」。</p>
+      </div>
+    </div>
+
+    <div class="card" style="background:var(--surface-3);border-color:var(--warn)">
+      <h3 style="color:var(--warn)">混在一个核上会发生什么 —— 完全可预测</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px;line-height:1.85"><span class="c">单核：</span>  [解码一大段音频.....................] [刷屏] [解码.................] [刷屏]
+                    <span class="c">↑ 吞吐型任务长时间占用 CPU</span>          <span class="c">↑ 实时型被推迟 → 屏幕卡顿、摇杆迟钝</span>
+
+<span class="c">双核：</span>
+  <span class="k">core 1</span>  [刷屏][扫键][刷屏][扫键][刷屏][扫键][刷屏]   <span class="s">← 实时型，节奏稳定</span>
+  <span class="k">core 0</span>  [解码.............][网络请求........][解码]   <span class="s">← 吞吐型，互相挤没关系</span></pre>
+      <p style="margin-top:12px;font-size:14.5px"><b style="color:var(--s3)">物理隔离之后，问题从根上消失</b> ——
+      两类任务不在同一个核上，就不存在互相抢占的可能。
+      <b style="color:var(--text-primary)">而吞吐型任务之间互相挤是没关系的，它们本来就允许慢。</b></p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 20 全链路回顾 ============ -->
+<section class="slide" data-notes="【口播】把整期的原理串成一张图，这页可以暂停截图。<br>
+<em>上半部分是音频链路</em>，从右往左看，其实是一条不断「还原」的路径。最右边是我们要的结果：空气振动。往左一步，是喇叭线圈把 PWM 方波平滑成模拟电流。再往左，是 D 类功放把数字样本调制成开关脉冲。再往左，是 I2S 按精确时钟串行送出。再往左，是 DMA 自动搬运。再往左，是解码器把压缩格式还原成 PCM。最左边，是网络上一串压缩过的字节。<br>
+<em>下半部分是显示和输入链路</em>，它们比音频短得多，但结构是一样的：都是数字和物理量之间的转换。<br>
+<em>我希望你看到的是：这三条链路上没有任何一步是「魔法」。</em>每一步都有明确的输入、明确的输出、明确的存在理由 —— 要么是格式需要转换，要么是速度不匹配需要缓冲，要么是数字和模拟之间需要跨越。<br>
+下面四行是这一期最值得带走的四个概念，<em>它们的适用范围远远超出音频和嵌入式。</em>">
+  <div class="eyebrow">Summary · 回顾</div>
+  <h2>三条链路，一张图</h2>
+  <p class="sub">每一步都有明确的输入、输出和存在理由 —— 没有任何一步是魔法</p>
+  <div class="slide-body top">
+    <table style="font-size:12.5px">
+      <tr><th style="width:118px">环节</th><th style="width:190px">输入 → 输出</th><th>为什么需要这一步</th><th style="width:70px">原理</th></tr>
+      <tr><td class="k" style="color:var(--s2)">网络流</td><td>HTTP 字节流 → 压缩帧</td>
+          <td>音频文件太大必须压缩；MP3 的帧独立性使流式成为可能</td><td>P.10</td></tr>
+      <tr><td class="k" style="color:var(--s4)">流缓冲</td><td>不稳定字节流 → 平稳字节流</td>
+          <td>网络速度不确定（秒级抖动），需要按秒设计的水池</td><td>P.11</td></tr>
+      <tr><td class="k" style="color:var(--s3)">解码</td><td>MP3 / FLAC → <b style="color:var(--text-primary)">PCM</b></td>
+          <td>还原成链路唯一认识的格式；<b style="color:var(--text-primary)">格式差异到此为止</b></td><td>P.12</td></tr>
+      <tr><td class="k" style="color:var(--s4)">DMA 缓冲</td><td>突发的 PCM → 恒定的 PCM</td>
+          <td>CPU 调度不确定（毫秒级抖动），需要按百毫秒设计的水池</td><td>P.11</td></tr>
+      <tr><td class="k" style="color:var(--s1)">DMA 搬运</td><td>内存 → I2S 外设</td>
+          <td>让 CPU 从「每秒 44100 次打断」中解放出来</td><td>P.13</td></tr>
+      <tr><td class="k" style="color:var(--s1)">I2S 传输</td><td>PCM → BCLK/LRC/DIN</td>
+          <td>音频需要<b style="color:var(--text-primary)">等时性</b>；时间信息编码在时钟里</td><td>P.07</td></tr>
+      <tr><td class="k" style="color:var(--s2)">D 类调制</td><td>数字样本 → PWM 功率方波</td>
+          <td>只开关不线性放大 → 效率 &gt;90%，并合并了 DAC 与功放</td><td>P.06</td></tr>
+      <tr><td class="k" style="color:var(--s3)">线圈滤波</td><td>PWM → 模拟电流 → <b style="color:var(--text-primary)">空气振动</b></td>
+          <td>电感天然阻碍电流突变，喇叭自己就是低通滤波器</td><td>P.06</td></tr>
+
+      <tr><td class="k" style="color:var(--s1);border-top:2px solid var(--rule)">SPI 写显存</td>
+          <td style="border-top:2px solid var(--rule)">RGB565 像素 → <b style="color:var(--text-primary)">屏幕的光</b></td>
+          <td style="border-top:2px solid var(--rule)">写进去就保持着 → 只需重画变化的部分</td>
+          <td style="border-top:2px solid var(--rule)">P.16·17</td></tr>
+      <tr><td class="k" style="color:var(--s2)">GPIO / ADC 读入</td><td><b style="color:var(--text-primary)">手指动作</b> → 0/1 或 0~4095</td>
+          <td>数字输入用时间窗口消抖，模拟输入用数值区间定方向</td><td>P.18</td></tr>
+    </table>
+
+    <div class="grid4" style="margin-top:16px;gap:13px">
+      <div class="card" style="background:var(--surface-3);border-color:var(--s3);padding:14px 16px">
+        <h3 style="font-size:14px;color:var(--s3)">① PCM 是唯一的通货</h3>
+        <p style="font-size:12.5px">解码器只是格式适配层，差异在解码后就消失了。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s4);padding:14px 16px">
+        <h3 style="font-size:14px;color:var(--s4)">② 缓冲 = 延迟换确定性</h3>
+        <p style="font-size:12.5px">深度必须匹配它要吸收的抖动的<b style="color:var(--text-primary)">时间尺度</b>。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s1);padding:14px 16px">
+        <h3 style="font-size:14px;color:var(--s1)">③ 进度在过程内找刻度</h3>
+        <p style="font-size:12.5px">不要用外部时钟推算，否则误差永远不会回正。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3);border-color:var(--s2);padding:14px 16px">
+        <h3 style="font-size:14px;color:var(--s2)">④ 比特给最敏感处</h3>
+        <p style="font-size:12.5px">MP3 给中频，RGB565 给绿色 —— 同一个思路。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 21 结尾 + 下期预告 ============ -->
+<section class="slide" data-notes="【口播】这一期就到这。<br>
+我们把三条链路都讲完了。<em>音频链路</em>：从「声音在数字世界里是什么」开始，讲了采样和量化、D 类功放为什么不需要 DAC、I2S 三根线怎么承载时间信息、流式播放为什么可行、两级缓冲各自在防什么、解码器的本质、DMA 怎么把 CPU 解放出来、播放位置为什么要数样本、频谱怎么从波形变出来。<em>显示链路</em>：RGB565 为什么绿色多一位、为什么只能局部刷新。<em>输入链路</em>：按键为什么要消抖、摇杆为什么要死区。最后是双核怎么分工。<br>
+<em>整套东西没有任何一步是魔法。</em><br>
+下一期讲反方向：声音怎么进到设备里、怎么在本地识别唤醒词、怎么送到大模型、回复又怎么变回声音。<em>而回复变回声音的那一步，走的正是今天讲的音频链路；对话状态的显示，用的也是今天讲的局部刷新</em> —— 所以这一期是地基。<br>
+如果这期对你有帮助，麻烦一键三连。评论区告诉我第二期你最想先看哪一部分。下期见。">
+  <div class="slide-body">
+    <div class="eyebrow">End of EP.1</div>
+    <h1 style="font-size:44px;max-width:920px">三条链路，没有任何一步是魔法<br>
+      <span style="color:var(--s3)">每一步都有明确的输入、输出和理由</span></h1>
+
+    <div class="card" style="margin-top:22px;max-width:980px;background:var(--surface-3)">
+      <h3>本期讲过的原理</h3>
+      <div class="grid3" style="gap:14px;margin-top:8px">
+        <table style="font-size:12.5px">
+          <tr><td class="k" style="width:52px;color:var(--s3)">P.05</td><td>采样定理、量化、PCM</td></tr>
+          <tr><td class="k" style="color:var(--s3)">P.06</td><td>D 类功放与线圈自滤波</td></tr>
+          <tr><td class="k" style="color:var(--s3)">P.07</td><td>I2S：时间编码在时钟里</td></tr>
+          <tr><td class="k" style="color:var(--s3)">P.10</td><td>流式播放与帧独立性</td></tr>
+        </table>
+        <table style="font-size:12.5px">
+          <tr><td class="k" style="width:52px;color:var(--s4)">P.11</td><td>缓冲 = 延迟换确定性</td></tr>
+          <tr><td class="k" style="color:var(--s4)">P.12</td><td>有损 vs 无损压缩</td></tr>
+          <tr><td class="k" style="color:var(--s4)">P.13</td><td>DMA：填与送的解耦</td></tr>
+          <tr><td class="k" style="color:var(--s4)">P.14</td><td>在过程内部找刻度</td></tr>
+        </table>
+        <table style="font-size:12.5px">
+          <tr><td class="k" style="width:52px;color:var(--s1)">P.15</td><td>傅里叶变换与对数分组</td></tr>
+          <tr><td class="k" style="color:var(--s1)">P.16·17</td><td>RGB565 与局部刷新</td></tr>
+          <tr><td class="k" style="color:var(--s1)">P.18</td><td>按键消抖与摇杆死区</td></tr>
+          <tr><td class="k" style="color:var(--s1)">P.19</td><td>按延迟敏感度分核</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-top:16px;max-width:980px">
+      <div class="card" style="border-color:var(--s1)">
+        <h3 style="color:var(--s1);font-size:16px">📺 下期预告 · 第二期：它是怎么听懂人话的</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:120px">声音进设备</td><td>数字麦克风原理，I2S 的输入方向</td></tr>
+          <tr><td class="k">端侧唤醒</td><td>神经网络唤醒词如何在 MCU 上实时运行</td></tr>
+          <tr><td class="k">实时语音链路</td><td>一句话从麦克风到大模型再回到喇叭</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13px"><b style="color:var(--warn)">承接本期：</b>
+        语音回复走的是<b style="color:var(--text-primary)">今天讲的音频链路</b>，对话状态显示用的是<b style="color:var(--text-primary)">今天讲的局部刷新</b>。</p>
+      </div>
+      <figure style="margin:0;display:flex;flex-direction:column">
+        <img src="images/fig-09.png" alt="成品运行中：屏幕显示逐行歌词与进度"
+             style="width:100%;flex:1;min-height:0;object-fit:cover;display:block;
+                    border-radius:var(--radius);border:1px solid var(--rule)">
+        <figcaption style="font-family:var(--mono);font-size:10px;letter-spacing:.05em;
+                           color:var(--text-muted);margin-top:6px;text-align:center">
+          三条链路跑起来的样子</figcaption>
+      </figure>
+    </div>
+
+    <p class="sub" style="margin-top:16px;font-size:16px">
+      评论区告诉我第二期想先看哪部分 —— <span style="color:var(--s1)">唤醒词原理</span> · <span style="color:var(--s3)">实时音频协议</span> · <span style="color:var(--s4)">大模型对话</span>
+    </p>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / EP.1 原理篇</span><span class="pageno"></span></div>
+</section>
+
+</div>
+
+<div id="notes"></div>
+<div id="jump"><input id="jumpi" inputmode="numeric" placeholder="页码"></div>
+
+<script>
+const stage=document.getElementById('stage');
+const slides=[...document.querySelectorAll('.slide')];
+const notes=document.getElementById('notes');
+const bar=document.getElementById('bar');
+const jump=document.getElementById('jump'), jumpi=document.getElementById('jumpi');
+const themebar=document.getElementById('themebar'), tname=document.getElementById('tname');
+let cur=0, showNotes=false;
+
+/* ---- 6 套风格。scan=true 表示该风格默认开启扫描线/边框装饰 ---- */
+const THEMES=[
+  {id:'scope',     name:'SCOPE 示波器',    scan:true},
+  {id:'pcb',       name:'PCB 电路板',      scan:false},
+  {id:'blueprint', name:'BLUEPRINT 蓝图',  scan:true},
+  {id:'terminal',  name:'TERMINAL 终端',   scan:true},
+  {id:'neon',      name:'NEON 霓虹',       scan:false},
+  {id:'paper',     name:'PAPER 技术白',    scan:false},
+];
+let theme=0;
+function setTheme(i){
+  theme=i;
+  stage.dataset.theme=THEMES[i].id;
+  document.body.dataset.theme=THEMES[i].id;
+  stage.classList.toggle('scanlines',THEMES[i].scan);
+  tname.textContent=(i+1)+' '+THEMES[i].name;
+  try{ localStorage.setItem('ep1-theme',i); }catch(e){}
+  fitDense();
+}
+
+/* 逐页实测「内容自然高度 vs 可用高度」：超出的自动加 .dense 收一档字号与间距，
+   仍超出的再用 transform 等比缩到装得下。对所有风格生效 ——
+   浅色风格顶栏额外吃掉 56px，溢出的页更多，但深色风格同样存在满页。 */
+function fitDense(){
+  slides.forEach(sl=>{
+    const body = sl.querySelector('.slide-body');
+    sl.classList.remove('dense');
+    if(body){ body.style.transform=''; body.style.height=''; }
+    if(!body) return;
+
+    const wasOn = sl.classList.contains('on');
+    if(!wasOn){ sl.style.visibility='hidden'; sl.style.display='flex'; }
+
+    // 可用高度 = 卡槽自身高度；自然高度 = 子元素撑开的总高
+    const avail = body.clientHeight;
+    const natural = () => {
+      let h = 0;
+      for(const el of body.children){
+        const cs = getComputedStyle(el);
+        h += el.getBoundingClientRect().height
+           + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom);
+      }
+      return h;
+    };
+
+    if(natural() > avail + 1){
+      sl.classList.add('dense');
+      let over = natural();
+      if(over > avail + 1){          // 收一档仍不够 → 等比缩
+        // 留 4px 余量：缩放后布局会回流，纯比值会因舍入残留 1~3px 溢出
+        let k = Math.max(0.80, (avail - 4) / over);
+        body.style.transformOrigin = 'top center';
+        body.style.transform = `scale(${k.toFixed(4)})`;
+        body.style.height = `${avail / k}px`;
+        // 回流后复测一次，仍超则再收一点
+        if(natural() > (avail / k) + 1){
+          k = Math.max(0.80, k * ((avail / k) - 4) / natural());
+          body.style.transform = `scale(${k.toFixed(4)})`;
+          body.style.height = `${avail / k}px`;
+        }
+      }
+    }
+    if(!wasOn){ sl.style.display=''; sl.style.visibility=''; }
+  });
+}
+
+function fit(){
+  const s=Math.min(innerWidth/1280, innerHeight/720);
+  stage.style.transform=`translate(-50%,-50%) scale(${s})`;
+}
+addEventListener('resize',fit); fit();
+
+function render(){
+  slides.forEach((s,i)=>s.classList.toggle('on',i===cur));
+  const n=slides[cur].querySelector('.pageno');
+  if(n) n.textContent=String(cur+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
+  bar.style.width=((cur+1)/slides.length*100)+'%';
+  notes.innerHTML='<b>演讲者备注</b>'+(slides[cur].dataset.notes||'（本页无备注）');
+  notes.scrollTop=0;
+  location.hash=cur+1;
+  // 广播当前页给独立提词器窗口（teleprompter.html 轮询此键跟随翻页）
+  try{ localStorage.setItem('ep1-slide-page', String(cur+1)); }catch(e){}
+}
+function go(i){ cur=Math.max(0,Math.min(slides.length-1,i)); render(); }
+
+addEventListener('keydown',e=>{
+  if(jump.classList.contains('on')){
+    if(e.key==='Enter'){ go(parseInt(jumpi.value,10)-1||0); jump.classList.remove('on'); }
+    if(e.key==='Escape') jump.classList.remove('on');
+    return;
+  }
+  if(e.key>='1'&&e.key<='6'){ setTheme(+e.key-1); return; }
+  if(e.key==='0'){ stage.classList.toggle('scanlines'); return; }
+  switch(e.key){
+    case 'ArrowRight': case ' ': case 'PageDown': case 'j': e.preventDefault(); go(cur+1); break;
+    case 'ArrowLeft': case 'PageUp': case 'k': e.preventDefault(); go(cur-1); break;
+    case 'Home': go(0); break;
+    case 'End': go(slides.length-1); break;
+    case 'n': case 'N': showNotes=!showNotes; notes.classList.toggle('on',showNotes); break;
+    case 't': case 'T': themebar.classList.toggle('on'); break;
+    case 'f': case 'F': document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen(); break;
+    case 'g': case 'G': jump.classList.add('on'); jumpi.value=''; jumpi.focus(); break;
+  }
+});
+addEventListener('click',e=>{ if(e.target.closest('#notes,#jump,#themebar')) return;
+  go(cur + (e.clientX < innerWidth*0.28 ? -1 : 1)); });
+
+let saved=0;
+try{ saved=parseInt(localStorage.getItem('ep1-theme'),10)||0; }catch(e){}
+setTheme(saved>=0&&saved<THEMES.length?saved:0);
+go(parseInt(location.hash.slice(1),10)-1 || 0);
+</script>
+</body>
+</html>

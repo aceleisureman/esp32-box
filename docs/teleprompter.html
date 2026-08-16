@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>提词器 · ESP32-S3 音频专题 EP.1</title>
+<style>
+:root{
+  --bg:#0b0d0c; --panel:#121614; --panel-2:#182320; --rule:#243430;
+  --fg:#eef5f1; --fg-2:#a9c4b8; --fg-3:#6b8a7d;
+  --cue:#ffd75e; --ref:#4de5ff; --accent:#5dfca0;
+  --sans:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --scale:1;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
+     display:flex;flex-direction:column;overflow:hidden}
+
+/* ── 顶栏 ── */
+#top{flex:none;display:flex;align-items:center;gap:14px;padding:10px 18px;
+     background:var(--panel);border-bottom:1px solid var(--rule)}
+#top .brand{font-family:var(--mono);font-size:12px;letter-spacing:.12em;color:var(--accent)}
+#top .pos{font-family:var(--mono);font-size:13px;color:var(--fg-3)}
+#top .spacer{flex:1}
+#clock{font-family:var(--mono);font-size:15px;color:var(--fg-2);font-variant-numeric:tabular-nums}
+#clock.run{color:var(--accent)}
+#top button{background:var(--panel-2);color:var(--fg-2);border:1px solid var(--rule);
+  border-radius:5px;padding:5px 11px;font-size:12px;font-family:var(--sans);cursor:pointer}
+#top button:hover{border-color:var(--accent);color:var(--fg)}
+#top button.on{background:var(--accent);color:#06120c;border-color:var(--accent);font-weight:700}
+
+/* ── 进度 ── */
+#prog{flex:none;height:3px;background:var(--panel-2)}
+#prog>i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s}
+
+/* ── 主体 ── */
+#wrap{flex:1;min-height:0;display:flex}
+
+/* 左：章节索引 */
+#toc{flex:none;width:210px;overflow-y:auto;background:var(--panel);
+     border-right:1px solid var(--rule);padding:8px 0}
+#toc .it{display:flex;gap:9px;align-items:baseline;padding:7px 12px;cursor:pointer;
+  border-left:3px solid transparent;line-height:1.35}
+#toc .it:hover{background:var(--panel-2)}
+#toc .it.on{background:var(--panel-2);border-left-color:var(--accent)}
+#toc .it .n{font-family:var(--mono);font-size:11px;color:var(--fg-3);flex:none;width:22px}
+#toc .it.on .n{color:var(--accent)}
+#toc .it .tt{font-size:12.5px;color:var(--fg-2)}
+#toc .it.on .tt{color:var(--fg);font-weight:600}
+
+/* 中：提词正文 */
+#main{flex:1;min-width:0;overflow-y:auto;padding:26px 34px 120px;scroll-behavior:smooth}
+#eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--accent);
+         margin-bottom:7px}
+#title{font-size:calc(27px*var(--scale));font-weight:700;line-height:1.25;margin:0 0 6px}
+#sub{font-size:calc(14px*var(--scale));color:var(--fg-3);margin:0 0 20px;line-height:1.6}
+#script{font-size:calc(20px*var(--scale));line-height:1.95;color:var(--fg)}
+#script p{margin:0 0 15px}
+#script em{color:var(--cue);font-style:normal;font-weight:600}
+#script .cue{color:var(--cue);font-weight:700;display:inline-block;min-width:14em}
+#script .why{color:var(--fg-2)}
+#script .ref{color:var(--ref);font-family:var(--mono);font-size:.8em;margin-left:8px}
+
+/* 右：手绘补充图 */
+#aside{flex:none;width:300px;overflow-y:auto;background:var(--panel);
+       border-left:1px solid var(--rule);padding:16px 14px 80px}
+#aside h4{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--fg-3);
+  margin:0 0 12px;font-weight:400}
+.sk{margin-bottom:20px;padding-bottom:16px;border-bottom:1px dashed var(--rule)}
+.sk:last-child{border-bottom:0}
+.sk .box{background:var(--panel-2);border:1px solid var(--rule);border-radius:6px;
+  padding:10px;color:var(--fg-2)}
+.sk svg{width:100%;height:auto;display:block}
+.sk .cap{font-size:11.5px;color:var(--fg-3);margin-top:7px;line-height:1.5}
+.sk .tag{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent);
+  margin-bottom:6px}
+#aside .none{font-size:12px;color:var(--fg-3);line-height:1.7}
+
+/* ── 底部操作 ── */
+#foot{flex:none;display:flex;align-items:center;gap:16px;padding:8px 18px;
+  background:var(--panel);border-top:1px solid var(--rule);font-size:11.5px;color:var(--fg-3)}
+#foot kbd{font-family:var(--mono);background:var(--panel-2);border:1px solid var(--rule);
+  border-radius:4px;padding:1px 6px;color:var(--fg-2);font-size:11px}
+
+/* 大字模式：适合远距离看 */
+body.big{--scale:1.34}
+body.big #toc,body.big #aside{display:none}
+
+@media print{ #top,#toc,#foot,#prog{display:none} #aside{display:none} }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <span class="brand">TELEPROMPTER</span>
+  <span class="pos" id="pos">— / —</span>
+  <div class="spacer"></div>
+  <span id="clock">00:00</span>
+  <button id="btnTimer">▶ 计时</button>
+  <button id="btnBig">大字</button>
+  <button id="btnSync" class="on">跟随投屏</button>
+</div>
+<div id="prog"><i id="progbar"></i></div>
+
+<div id="wrap">
+  <nav id="toc"></nav>
+  <main id="main">
+    <div id="eyebrow"></div>
+    <h1 id="title">载入中…</h1>
+    <p id="sub"></p>
+    <div id="script"></div>
+  </main>
+  <aside id="aside">
+    <h4>补充图 · 手绘</h4>
+    <div id="sketches"></div>
+  </aside>
+</div>
+
+<div id="foot">
+  <span><kbd>←</kbd><kbd>→</kbd> 翻页</span>
+  <span><kbd>空格</kbd> 下一页</span>
+  <span><kbd>B</kbd> 大字</span>
+  <span><kbd>T</kbd> 计时</span>
+  <span><kbd>F</kbd> 全屏</span>
+  <span style="margin-left:auto">与幻灯片同窗口打开时自动同步页码</span>
+</div>
+
+<script>
+/* ══ 手绘补充图：按 key 挂到对应页 ══
+   SKETCHES[页码] = [{tag, svg, cap}, ...]
+   由 sketches.js 注入；缺失时右栏显示占位说明。 */
+window.SKETCHES = window.SKETCHES || {};
+</script>
+<script src="sketches.js" onerror="console.warn('sketches.js 未找到')"></script>
+
+<script>
+const SLIDE_FILE = 'tech-talk-ep1-slides.html';
+let DECK = [];
+let cur = 0;
+
+/* ── 从幻灯片文件解析标题与备注（单一数据源，改稿不必同步两份）── */
+async function load(){
+  let html = await fetchDeck();
+  if(html === null){
+    document.getElementById('title').textContent = '读不到幻灯片文件';
+    document.getElementById('eyebrow').textContent = '需要用本地服务器打开';
+    document.getElementById('script').innerHTML =
+      '<p>浏览器的同源策略不允许 <code>file://</code> 页面读取另一个文件，' +
+      '所以提词内容拿不到。在 <code>docs</code> 目录下起一个静态服务器即可：</p>' +
+      '<p style="background:var(--panel-2);padding:12px 14px;border-radius:6px;' +
+      'font-family:var(--mono);font-size:15px">python3 -m http.server 8000</p>' +
+      '<p>然后打开 <code>http://localhost:8000/teleprompter.html</code>，' +
+      '幻灯片则是 <code>http://localhost:8000/tech-talk-ep1-slides.html</code>。</p>' +
+      '<p style="color:var(--fg-3);font-size:.85em">两个页面都用 localhost 打开，翻页同步才会生效。</p>';
+    return;
+  }
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  DECK = [...doc.querySelectorAll('section.slide')].map((s, i) => ({
+    p: i + 1,
+    eyebrow: (s.querySelector('.eyebrow')?.textContent || '').trim(),
+    title: (s.querySelector('h1,h2')?.textContent || '').replace(/\s+/g, ' ').trim(),
+    sub: (s.querySelector('.sub')?.textContent || '').replace(/\s+/g, ' ').trim(),
+    notes: s.dataset.notes || '',
+  }));
+  if(!DECK.length){
+    document.getElementById('title').textContent = '幻灯片里没找到内容';
+    return;
+  }
+  buildToc();
+  go(readHash());
+}
+
+/* fetch 在 file:// 下会被拦截，退回 XHR 再试一次（部分浏览器允许同目录读取）*/
+function fetchDeck(){
+  return fetch(SLIDE_FILE).then(r => r.ok ? r.text() : Promise.reject())
+    .catch(() => new Promise(res => {
+      try{
+        const x = new XMLHttpRequest();
+        x.open('GET', SLIDE_FILE);
+        x.onload = () => res(x.responseText || null);
+        x.onerror = () => res(null);
+        x.send();
+      }catch(e){ res(null); }
+    }));
+}
+
+function buildToc(){
+  document.getElementById('toc').innerHTML = DECK.map((d, i) =>
+    `<div class="it" data-i="${i}">
+       <span class="n">${String(d.p).padStart(2,'0')}</span>
+       <span class="tt">${esc(d.title || d.eyebrow || '（封面）')}</span>
+     </div>`).join('');
+  document.querySelectorAll('#toc .it').forEach(el =>
+    el.onclick = () => go(+el.dataset.i));
+}
+
+function esc(s){
+  return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+/* 备注是一段用 <br> 分行的富文本，转成段落更好读 */
+function fmt(notes){
+  if(!notes) return '<p style="color:var(--fg-3)">（本页无提词内容）</p>';
+  return notes.split(/<br\s*\/?>/i)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => `<p>${s}</p>`)
+    .join('');
+}
+
+function renderSketches(page){
+  const box = document.getElementById('sketches');
+  const list = window.SKETCHES[page];
+  if(!list || !list.length){
+    box.innerHTML = '<div class="none">本页暂无补充图。<br><br>' +
+      '需要的话告诉我这一页想补什么，我再画。</div>';
+    return;
+  }
+  box.innerHTML = list.map(s => `
+    <div class="sk">
+      ${s.tag ? `<div class="tag">${esc(s.tag)}</div>` : ''}
+      <div class="box">${s.svg}</div>
+      ${s.cap ? `<div class="cap">${esc(s.cap)}</div>` : ''}
+    </div>`).join('');
+}
+
+function go(i){
+  if(!DECK.length) return;
+  cur = Math.max(0, Math.min(DECK.length - 1, i));
+  const d = DECK[cur];
+  document.getElementById('eyebrow').textContent = d.eyebrow;
+  document.getElementById('title').textContent = d.title || '（封面）';
+  document.getElementById('sub').textContent = d.sub;
+  document.getElementById('script').innerHTML = fmt(d.notes);
+  document.getElementById('pos').textContent =
+    String(d.p).padStart(2,'0') + ' / ' + String(DECK.length).padStart(2,'0');
+  document.getElementById('progbar').style.width =
+    ((cur + 1) / DECK.length * 100) + '%';
+  document.querySelectorAll('#toc .it').forEach((el, k) =>
+    el.classList.toggle('on', k === cur));
+  const on = document.querySelector('#toc .it.on');
+  if(on) on.scrollIntoView({block:'nearest'});
+  document.getElementById('main').scrollTop = 0;
+  renderSketches(d.p);
+  location.hash = d.p;
+}
+
+function readHash(){
+  const n = parseInt(location.hash.slice(1), 10);
+  return (n > 0 ? n - 1 : 0);
+}
+
+/* ── 与幻灯片窗口同步：幻灯片写 hash，这里轮询 localStorage ── */
+let sync = true;
+document.getElementById('btnSync').onclick = e => {
+  sync = !sync;
+  e.target.classList.toggle('on', sync);
+};
+setInterval(() => {
+  if(!sync) return;
+  const v = parseInt(localStorage.getItem('ep1-slide-page'), 10);
+  if(v > 0 && v - 1 !== cur) go(v - 1);
+}, 400);
+
+/* ── 计时器：暂停后再开始接着走，长按按钮清零 ── */
+let elapsed = 0, startAt = 0, timer = null;
+document.getElementById('btnTimer').onclick = toggleTimer;
+document.getElementById('btnTimer').oncontextmenu = e => {
+  e.preventDefault();
+  if(timer){ clearInterval(timer); timer = null; }
+  elapsed = 0; paint();
+  document.getElementById('btnTimer').textContent = '▶ 计时';
+  document.getElementById('clock').classList.remove('run');
+};
+function paint(){
+  const s = Math.floor(elapsed / 1000);
+  document.getElementById('clock').textContent =
+    String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+}
+function toggleTimer(){
+  const c = document.getElementById('clock'), b = document.getElementById('btnTimer');
+  if(timer){
+    clearInterval(timer); timer = null;
+    elapsed += Date.now() - startAt;
+    b.textContent = '▶ 继续'; c.classList.remove('run');
+  }else{
+    startAt = Date.now();
+    timer = setInterval(() => {
+      const s = Math.floor((elapsed + Date.now() - startAt) / 1000);
+      c.textContent = String(Math.floor(s / 60)).padStart(2,'0') + ':' +
+                      String(s % 60).padStart(2,'0');
+    }, 250);
+    b.textContent = '❚❚ 暂停'; c.classList.add('run');
+  }
+}
+
+document.getElementById('btnBig').onclick = e => {
+  document.body.classList.toggle('big');
+  e.target.classList.toggle('on', document.body.classList.contains('big'));
+};
+
+addEventListener('keydown', e => {
+  switch(e.key){
+    case 'ArrowRight': case ' ': case 'PageDown': case 'j':
+      e.preventDefault(); go(cur + 1); break;
+    case 'ArrowLeft': case 'PageUp': case 'k':
+      e.preventDefault(); go(cur - 1); break;
+    case 'Home': go(0); break;
+    case 'End': go(DECK.length - 1); break;
+    case 'b': case 'B': document.getElementById('btnBig').click(); break;
+    case 't': case 'T': toggleTimer(); break;
+    case 'f': case 'F':
+      document.fullscreenElement ? document.exitFullscreen()
+                                 : document.documentElement.requestFullscreen();
+      break;
+  }
+});
+addEventListener('hashchange', () => { const i = readHash(); if(i !== cur) go(i); });
+
+load();
+</script>
+</body>
+</html>

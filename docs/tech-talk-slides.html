@@ -1,0 +1,1350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-S3 智能语音音箱 · 技术分析</title>
+<style>
+/* ============================================================
+   ESP32-BOX 技术分析演讲稿
+   固定 1280x720 舞台，按视口等比缩放 —— 录屏时版式绝对稳定。
+   操作：← → / 空格 翻页，F 全屏，N 显隐讲稿，G 跳页
+   ============================================================ */
+:root{
+  --surface-1:#16181d;      /* 舞台底 */
+  --surface-2:#1e2128;      /* 卡片 */
+  --surface-3:#262a33;      /* 卡片内嵌 */
+  --text-primary:#ffffff;
+  --text-secondary:#c3c2b7;
+  --text-muted:#898781;
+  --grid:#2c2f36;
+  --rule:#383b44;
+  --s1:#3987e5;             /* 蓝 —— 固件/设备侧 */
+  --s2:#d95926;             /* 橙 —— 后端/云侧 */
+  --s3:#199e70;             /* 绿 —— 音频链路 */
+  --s4:#c98500;             /* 黄 —— 存储/模型 */
+  --good:#0ca30c;
+  --warn:#fab219;
+  --crit:#d03b3b;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
+
+/* ---- 舞台缩放 ---- */
+#stage{position:absolute;top:50%;left:50%;width:1280px;height:720px;
+       transform-origin:center center;background:var(--surface-1);color:var(--text-primary)}
+.slide{position:absolute;inset:0;padding:52px 64px 64px;display:none;
+       flex-direction:column;animation:fade .28s ease}
+.slide.on{display:flex}
+@keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* ---- 页眉 ---- */
+.eyebrow{font-size:13px;letter-spacing:.14em;color:var(--s1);font-weight:700;
+         text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:9px}
+.eyebrow::before{content:"";width:22px;height:2px;background:var(--s1);border-radius:1px}
+h1{font-size:44px;line-height:1.18;margin:0 0 10px;font-weight:700;letter-spacing:-.01em}
+h2{font-size:33px;line-height:1.25;margin:0 0 8px;font-weight:700;letter-spacing:-.01em}
+.sub{font-size:16px;color:var(--text-secondary);line-height:1.65;margin:0 0 22px;max-width:1000px}
+.slide-body{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}
+.slide-body.top{justify-content:flex-start}
+
+/* ---- 页脚 ---- */
+.foot{position:absolute;left:64px;right:64px;bottom:22px;display:flex;
+      justify-content:space-between;align-items:center;font-size:12px;color:var(--text-muted)}
+.foot .tag{font-family:var(--mono);letter-spacing:.04em}
+.pageno{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---- 通用卡片 ---- */
+.card{background:var(--surface-2);border:1px solid var(--rule);border-radius:14px;padding:20px 22px}
+.card h3{margin:0 0 10px;font-size:17px;font-weight:700;display:flex;align-items:center;gap:9px}
+.card p{margin:0;font-size:14px;line-height:1.72;color:var(--text-secondary)}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+
+/* ---- 统计块 ---- */
+.stat{background:var(--surface-2);border:1px solid var(--rule);border-radius:14px;padding:18px 20px}
+.stat .label{font-size:12.5px;color:var(--text-muted);margin-bottom:7px}
+.stat .value{font-size:36px;font-weight:700;line-height:1;letter-spacing:-.02em}
+.stat .unit{font-size:15px;color:var(--text-secondary);font-weight:600;margin-left:3px}
+.stat .note{font-size:12px;color:var(--text-muted);margin-top:8px;line-height:1.55}
+.hero-num{font-size:76px;font-weight:700;line-height:1;letter-spacing:-.03em}
+
+/* ---- 表格 ---- */
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-weight:600;color:var(--text-muted);font-size:12px;
+   letter-spacing:.05em;text-transform:uppercase;padding:0 12px 9px;border-bottom:1px solid var(--rule)}
+td{padding:9px 12px;border-bottom:1px solid var(--grid);color:var(--text-secondary);line-height:1.5}
+tr:last-child td{border-bottom:none}
+td.k{color:var(--text-primary);font-weight:600}
+td .mono,code{font-family:var(--mono);font-size:12.5px;color:var(--text-primary);
+      background:var(--surface-3);padding:1.5px 6px;border-radius:5px}
+.num{font-variant-numeric:tabular-nums;text-align:right}
+
+/* ---- 代码块 ---- */
+pre{margin:0;background:var(--surface-2);border:1px solid var(--rule);border-radius:12px;
+    padding:16px 18px;font-family:var(--mono);font-size:13px;line-height:1.72;
+    color:var(--text-secondary);overflow:hidden}
+pre .c{color:var(--text-muted)}                 /* 注释 */
+pre .k{color:var(--s1);font-weight:600}         /* 关键字 */
+pre .s{color:var(--s3)}                         /* 字符串 */
+pre .n{color:var(--s4)}                         /* 数字 */
+pre .hl{color:var(--text-primary);font-weight:600}
+.src{font-family:var(--mono);font-size:11.5px;color:var(--text-muted);margin-top:8px}
+
+/* ---- 讲稿 ---- */
+#notes{position:fixed;left:0;right:0;bottom:0;max-height:34vh;overflow:auto;
+       background:#0c0d10;border-top:2px solid var(--s1);padding:16px 26px 20px;
+       font-size:15px;line-height:1.8;color:#d8d8d2;display:none;z-index:50}
+#notes.on{display:block}
+#notes b{color:var(--s1);font-size:12px;letter-spacing:.1em;display:block;margin-bottom:6px}
+#notes p{margin:0 0 9px}
+#notes em{color:var(--warn);font-style:normal;font-weight:600}
+
+/* ---- 进度条 ---- */
+#bar{position:fixed;top:0;left:0;height:3px;background:var(--s1);z-index:60;transition:width .28s}
+/* ---- 跳页 ---- */
+#jump{position:fixed;inset:0;background:#000c;display:none;place-items:center;z-index:70}
+#jump.on{display:grid}
+#jump input{font:600 40px var(--mono);background:var(--surface-2);color:#fff;
+            border:2px solid var(--s1);border-radius:12px;padding:14px 28px;width:220px;text-align:center;outline:none}
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="stage">
+
+<!-- ============ 01 封面 ============ -->
+<section class="slide on" data-notes="开场。别急着讲技术，先把观众钉在椅子上。<br>
+【口播】三天，十八个提交，一块二十块钱的开发板。我做了一个能听懂人话的音箱 —— 说「你好小智」它就醒，然后你可以直接跟它聊天，让它换歌、调音量。<em>关键是，它不是调用某个现成的智能音箱 SDK，从唤醒词识别到音频流传输，整条链路是我自己搭的。</em><br>
+这期视频我不做成「跟着我做」的教程，我要讲的是这条链路上每一个技术选择背后的原因 —— 为什么麦克风必须接 GPIO41 而不能接 45，为什么提示音要等服务器回话之后才响，为什么天气刷新要给语音让路。<br>
+这些坑我都踩过，代码注释里全写着。走。">
+  <div class="slide-body">
+    <div class="eyebrow">ESP32-S3 · 嵌入式 AI 语音</div>
+    <h1 style="font-size:56px;max-width:940px">从蓝牙音箱到能对话的 AI 音箱<br>
+      <span style="color:var(--s1)">一条实时语音链路的完整拆解</span></h1>
+    <p class="sub" style="font-size:19px;max-width:860px;margin-top:18px">
+      ESP32-S3 端侧唤醒词 · WebSocket 音频流 · StepFun Realtime 大模型<br>
+      10,592 行固件 + Python 后端，逐层讲清每一个技术决策
+    </p>
+    <div class="grid4" style="margin-top:34px;max-width:900px">
+      <div class="stat"><div class="label">开发周期</div><div class="value" style="color:var(--s1)">3<span class="unit">天</span></div></div>
+      <div class="stat"><div class="label">固件代码</div><div class="value" style="color:var(--s3)">10.6<span class="unit">K 行</span></div></div>
+      <div class="stat"><div class="label">FreeRTOS 任务</div><div class="value" style="color:var(--s4)">5<span class="unit">个</span></div></div>
+      <div class="stat"><div class="label">硬件成本</div><div class="value" style="color:var(--s2)">~90<span class="unit">元</span></div></div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 02 成品演示 ============ -->
+<section class="slide" data-notes="【口播】先看东西。这是它现在的样子。<br>
+四个页面：时钟天气首页、音乐播放器带实时频谱和滚动歌词、WiFi 配网页扫码就能连、还有语音对话页。<br>
+<em>这里请剪辑配上真机演示：说「你好小智」→ 屏幕切到对话页 → 说「下一首」→ 它回一句话然后真的切歌。</em><br>
+注意几个细节，后面都会展开讲：唤醒的瞬间音乐是「淡出」的，不是啪一下静音，像手机来电那样；「叮」的提示音不是唤醒时响，是服务器准备好之后才响；说完话它先回答，回答播完了才去切歌 —— 这三个细节每一个背后都是一次踩坑。">
+  <div class="eyebrow">Demo</div>
+  <h2>它现在能做什么</h2>
+  <p class="sub">一块 2.8 寸屏，四个功能页面，一条语音链路把它们串起来</p>
+  <div class="slide-body top">
+    <div class="grid4">
+      <div class="card"><h3><span class="dot" style="background:var(--s1)"></span>时钟 · 天气</h3>
+        <p>SNTP 校时，IP 定位 + Open-Meteo 取天气，10 分钟刷新一次，失败指数退避</p></div>
+      <div class="card"><h3><span class="dot" style="background:var(--s3)"></span>音乐播放器</h3>
+        <p>网易云歌单流式播放，MP3/FLAC 解码，实时频谱柱状图，LRC 歌词逐行滚动，封面 JPEG 解码</p></div>
+      <div class="card"><h3><span class="dot" style="background:var(--s4)"></span>WiFi 配网</h3>
+        <p>AP 热点 + 网页配网，屏幕直接画二维码，多网络记忆存 NVS</p></div>
+      <div class="card"><h3><span class="dot" style="background:var(--s2)"></span>语音对话</h3>
+        <p>端侧唤醒词，实时双向音频流，大模型对话，语音控制播放器</p></div>
+    </div>
+    <div class="card" style="margin-top:20px;background:var(--surface-3)">
+      <h3 style="color:var(--warn)">三个「不起眼」的细节 —— 本期视频的主线</h3>
+      <table style="margin-top:6px">
+        <tr><td class="k" style="width:230px">唤醒时音乐淡出，不是骤停</td>
+            <td>非阻塞音量渐变，UI 线程不能等</td></tr>
+        <tr><td class="k">「叮」在服务器就绪后才响</td>
+            <td>响之前说话会被吞字</td></tr>
+        <tr><td class="k">先说完回答，再执行切歌</td>
+            <td>否则确认语音被自己切掉</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 03 系统全景架构 ============ -->
+<section class="slide" data-notes="【口播】这是整个系统的全景图，记住这张图，后面所有内容都挂在这上面。<br>
+三层：左边是硬件，中间是 ESP32-S3 上跑的固件，右边是局域网里的一台 Python 后端和云端大模型。<br>
+<em>为什么要有中间那台后端服务器？直接让 ESP32 连大模型不行吗？</em><br>
+两个原因。第一，API Key 绝对不能烧进固件 —— 固件可以被 dump 出来，密钥就泄漏了，所以密钥只存在后端的 .env 里。第二，ESP32 的内存扛不住完整的 TLS 加密 + 音频编解码 + 协议解析同时跑，把复杂度挪到后端，设备只干最简单的事：收音、发字节、播音。<br>
+这个「设备做减法，后端做加法」的思路，是整个项目能在 512KB 内存里跑起来的前提。">
+  <div class="eyebrow">Architecture</div>
+  <h2>系统全景：三层分工</h2>
+  <p class="sub">设备只做「收音 · 发流 · 播音」，密钥与复杂度全部下沉到局域网后端</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:250px 1fr 1fr;gap:16px;align-items:stretch">
+
+      <div class="card" style="border-color:var(--s4)">
+        <h3><span class="dot" style="background:var(--s4)"></span>硬件层</h3>
+        <table style="font-size:12.5px">
+          <tr><td class="k">MCU</td><td>ESP32-S3 N16R8<br><span style="font-size:11.5px">16MB Flash / 8MB PSRAM</span></td></tr>
+          <tr><td class="k">屏幕</td><td>2.8" ST7789<br><span style="font-size:11.5px">320×240 SPI</span></td></tr>
+          <tr><td class="k">功放</td><td>MAX98357A<br><span style="font-size:11.5px">I2S0 TX 单声道</span></td></tr>
+          <tr><td class="k">麦克风</td><td>INMP441<br><span style="font-size:11.5px">I2S1 RX 数字麦</span></td></tr>
+          <tr><td class="k">输入</td><td>按键 + 模拟摇杆</td></tr>
+        </table>
+      </div>
+
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>固件层 · ESP32-S3</h3>
+        <div style="display:grid;gap:7px;margin-top:4px">
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s3)">WakeWord</b> · esp-sr WakeNet9 端侧唤醒
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">core 1 · 12KB 栈 · 优先级 3</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s3)">VoiceAssistant</b> · 会话状态机 + 麦克风采集
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">core 0 · 12KB 栈 · 优先级 2</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s3)">AudioPlayer</b> · MP3/FLAC 解码 + PCM 直通
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">core 0 · 10KB 栈 · 优先级 2</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s1)">MusicService</b> · 歌单/直链/歌词/封面
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">core 0 · 20KB 栈 · HTTPS + JSON + JPEG</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s1)">Display / Input</b> · UI 渲染与交互
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">core 1 · Arduino loop</div></div>
+        </div>
+      </div>
+
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>服务层 · 局域网 + 云</h3>
+        <div style="display:grid;gap:7px;margin-top:4px">
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s2)">Flask-Sock 后端</b>
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">/api/voice/realtime · 双线程转发</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s2)">memory.py</b> · 按 device_id 隔离记忆
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">多台设备互不串味</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px">
+            <b style="color:var(--s2)">commands.py</b> · 意图解析
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">「下一首」→ next</div></div>
+          <div style="background:var(--surface-3);border-radius:8px;padding:9px 12px;font-size:13px;border:1px solid var(--s2)">
+            <b style="color:var(--s2)">StepFun Realtime ☁</b>
+            <div style="color:var(--text-muted);font-size:11.5px;margin-top:2px">wss:// · ASR+LLM+TTS 一体</div></div>
+          <div style="background:#2a1a12;border-radius:8px;padding:9px 12px;font-size:12.5px;border:1px solid var(--s2)">
+            🔑 <b>API Key 只存后端 .env</b><br>
+            <span style="color:var(--text-secondary)">固件里不含任何密钥</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 04 为什么是 S3 ============ -->
+<section class="slide" data-notes="【口播】先说选型。为什么必须是 ESP32-S3，而不是更便宜的 ESP32 或者 C3。<br>
+一句话：<em>因为唤醒词模型跑不动。</em><br>
+esp-sr 的 WakeNet 是个神经网络，S3 上有专门为它加的向量指令扩展，能硬件加速这类运算。普通 ESP32 没有，跑同样的模型要么延迟高到没法用，要么直接跑不起来。<br>
+第二个硬指标是 PSRAM。8MB 外部内存，唤醒词模型、音频缓冲、屏幕缓冲全靠它。代码里我甚至做了检查 —— 如果没检测到 PSRAM，唤醒词功能直接不启用，因为知道一定会崩。<br>
+第三是双核。这点非常重要：UI 刷新固定跑 core 1，音频解码固定跑 core 0。<em>如果不分核，解码 FLAC 的时候屏幕会肉眼可见地卡住。</em>">
+  <div class="eyebrow">Hardware · 选型</div>
+  <h2>为什么必须是 ESP32-S3</h2>
+  <p class="sub">不是「性能更好」这么笼统 —— 是三个功能没它就实现不了</p>
+  <div class="slide-body top">
+    <div class="grid3">
+      <div class="card"><h3><span class="dot" style="background:var(--s1)"></span>向量指令扩展</h3>
+        <p><b style="color:var(--text-primary)">决定唤醒词能否跑起来。</b>esp-sr 的 WakeNet9 是神经网络模型，S3 的 SIMD 指令为其提供硬件加速。ESP32 / C3 无此扩展，同模型延迟不可接受。</p></div>
+      <div class="card"><h3><span class="dot" style="background:var(--s4)"></span>8MB Octal PSRAM</h3>
+        <p><b style="color:var(--text-primary)">决定音频缓冲能否开够。</b>256KB 流缓冲 + 512KB PCM 环形缓冲 + 模型驻留，全部走 <code>ps_malloc</code>。内部 SRAM 只有 512KB，装不下。</p></div>
+      <div class="card"><h3><span class="dot" style="background:var(--s3)"></span>双核 240MHz</h3>
+        <p><b style="color:var(--text-primary)">决定 UI 会不会卡。</b>音频解码钉在 core 0，Arduino loop（UI）钉在 core 1。单核架构下 FLAC 解码会把屏幕刷新挤没。</p></div>
+    </div>
+    <div class="card" style="margin-top:18px">
+      <h3>代码里的硬门槛：没有 PSRAM 就不启用唤醒词</h3>
+      <pre style="margin-top:8px"><span class="k">void</span> WakeWordClass::init() {
+    <span class="k">if</span> (!psramFound()) {
+        _enabled = <span class="k">false</span>;
+        Serial.println(<span class="s">"[WAKE] PSRAM unavailable; wake word disabled"</span>);
+        <span class="k">return</span>;   <span class="c">// 与其运行中 OOM 崩溃，不如启动就明确关闭</span>
+    }
+    <span class="c">// 优先级 3 高于音频任务，钉在 core 1 与 UI 同核 —— 唤醒检测必须实时</span>
+    xTaskCreatePinnedToCore(taskEntry, <span class="s">"wake"</span>, <span class="n">12288</span>, <span class="k">this</span>, <span class="n">3</span>, &_task, <span class="n">1</span>);
+}</pre>
+      <div class="src">src/WakeWord.cpp:19-36</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 05 引脚选型（重头戏） ============ -->
+<section class="slide" data-notes="【口播】这页是给所有做嵌入式的人看的，我认为是整个项目最有价值的一页。<br>
+<em>ESP32-S3 有 45 个 GPIO，但你真正能自由用的，不到一半。</em><br>
+看这个表：26 到 37 全部被 Flash 和 PSRAM 占了，碰了就死机。0、3、45、46 是 strapping 脚，上电瞬间的电平决定芯片以什么模式启动 —— 我在注释里特意写了一句：GPIO45 绝对不能给麦克风数据线，因为上电时麦克风输出的随机电平会干扰 Flash 电压选择，表现就是随机启动失败，这种问题你调三天都找不到原因。<br>
+19、20 是 USB，43、44 是串口，动了就没法烧录和看日志。<br>
+所以最后音频输出用 38/39/40，麦克风用 41/42/16。<em>而且 38/39/40 是连续的三个脚，这不是巧合</em> —— 功放模块放在面包板右侧时三根线能短距直连，不用绕过整块板子。BCLK 是 1.4MHz 的方波，长跨线会耦合 WiFi 和 SPI 的噪声，这是数字音频底噪的主要来源。">
+  <div class="eyebrow">Hardware · 引脚</div>
+  <h2>45 个 GPIO，能自由用的不到一半</h2>
+  <p class="sub">引脚分配不是「找个空脚接上」—— 每一个选择都在规避一类具体的故障</p>
+  <div class="slide-body top">
+    <div style="display:grid;grid-template-columns:1.05fr 1fr;gap:18px">
+      <div class="card">
+        <h3 style="color:var(--crit)">⛔ 禁区：这些脚碰了就出事</h3>
+        <table style="margin-top:4px">
+          <tr><td class="k" style="width:112px"><code>26–37</code></td>
+              <td>Octal Flash / PSRAM 数据线<br><span style="color:var(--crit);font-size:12px">占用 → 直接崩溃</span></td></tr>
+          <tr><td class="k"><code>0 · 3 · 45 · 46</code></td>
+              <td>Strapping 脚，上电电平决定启动模式<br><span style="color:var(--crit);font-size:12px">占用 → 随机启动失败，极难定位</span></td></tr>
+          <tr><td class="k"><code>19 · 20</code></td>
+              <td>原生 USB D+/D−<br><span style="color:var(--warn);font-size:12px">占用 → 无法烧录</span></td></tr>
+          <tr><td class="k"><code>43 · 44</code></td>
+              <td>UART0 TX/RX<br><span style="color:var(--warn);font-size:12px">占用 → 看不到串口日志</span></td></tr>
+          <tr><td class="k"><code>1 · 9 · 10</code></td>
+              <td>ADC1 —— 主动预留给电池电压检测<br><span style="color:var(--text-muted);font-size:12px">规划性预留</span></td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <h3 style="color:var(--good)">✓ 最终分配</h3>
+        <table style="margin-top:4px">
+          <tr><td class="k" style="width:96px"><code>38/39/40</code></td>
+              <td>I2S0 TX → MAX98357A<br><span style="font-size:12px;color:var(--text-muted)">BCLK / LRC / DIN</span></td></tr>
+          <tr><td class="k"><code>41/42/16</code></td>
+              <td>I2S1 RX → INMP441<br><span style="font-size:12px;color:var(--text-muted)">SCK / WS / SD</span></td></tr>
+          <tr><td class="k"><code>11/12/5/2/4</code></td>
+              <td>SPI → ST7789 屏<br><span style="font-size:12px;color:var(--text-muted)">SDA/SCL/CS/DC/RES</span></td></tr>
+          <tr><td class="k"><code>15</code></td>
+              <td>背光 PWM（可控息屏）</td></tr>
+        </table>
+        <div style="background:#2a1a12;border:1px solid var(--s2);border-radius:9px;padding:11px 13px;margin-top:12px;font-size:12.5px;line-height:1.7">
+          <b style="color:var(--warn)">⚠ 注释原文</b><br>
+          <span style="color:var(--text-secondary)">「GPIO45 是 strapping 脚，绝不能给麦克风数据线 —— 上电电平会干扰 Flash 电压选择。」</span>
+          <div class="src" style="margin-top:5px">include/pins_audio.h:51</div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;background:var(--surface-3)">
+      <h3 style="color:var(--s3)">🔊 为什么偏偏是连续的 38/39/40？—— 这是个模拟问题，不是数字问题</h3>
+      <p style="margin-top:4px">功放模块放在面包板右半区时，三根信号线可以<b style="color:var(--text-primary)">短距直连（&lt;15cm）并排走</b>，不必绕过整块开发板。
+      <b style="color:var(--warn)">长跨线是数字音频底噪的主因：BCLK 是 1.4MHz 方波，会耦合 WiFi / SPI 噪声。</b>
+      配套措施：功放 VIN-GND 就近并 470µF~1000µF 电解电容；单独拉一根地线与信号线同路径回流。</p>
+      <div class="src">include/pins_audio.h:4-27</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 06 混合框架 ============ -->
+<section class="slide" data-notes="【口播】接下来是一个把我卡了很久的构建问题。<br>
+esp-sr 这个语音识别库，是乐鑫官方的，但它是给 ESP-IDF 写的组件。而我整个项目是用 Arduino 框架写的 —— Adafruit 的屏幕库、ESP8266Audio 的解码库，都是 Arduino 生态。<br>
+<em>纯 Arduino 框架，根本不会去编译 components 目录下的 IDF 组件。</em>你把 esp-sr 放进去，它就静静躺在那，链接的时候报一堆 undefined reference。<br>
+解法是 PlatformIO 支持的混合框架：framework = arduino, espidf。这样 IDF 的构建系统会接管，components 下的组件正常编译；同时 Arduino 核心被注册成一个叫 framework-arduinoespressif32 的 IDF 组件，我在 src/CMakeLists.txt 里 REQUIRES 它，setup/loop 就还能正常用。<br>
+另外提一句 -Werror 那行：esp-sr 的源码有一些编译告警，在严格模式下会直接让整个构建失败。这不是我的代码的问题，所以我把 -Werror 解掉了。">
+  <div class="eyebrow">Build · 构建系统</div>
+  <h2>Arduino 与 ESP-IDF 混合框架</h2>
+  <p class="sub">屏幕库和音频库在 Arduino 生态，唤醒词库在 IDF 生态 —— 两个都要</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">✗ 问题</h3>
+        <p style="margin-bottom:10px">纯 <code>framework = arduino</code> 时，PlatformIO <b style="color:var(--text-primary)">不会编译 <code>components/</code> 下的 IDF 组件</b>。esp-sr 静静躺在目录里，链接阶段报满屏 undefined reference。</p>
+        <p>但 Adafruit GFX / ST7789、ESP8266Audio、WebSockets、ArduinoJson —— 项目主体全在 Arduino 生态，不可能推倒重来。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 解法：两个框架同时启用</h3>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="c">; platformio.ini</span>
+framework = <span class="hl">arduino, espidf</span>
+
+<span class="c">; src/CMakeLists.txt —— Arduino 核心被注册为 IDF 组件</span>
+idf_component_register(SRCS ${app_sources}
+  REQUIRES <span class="hl">framework-arduinoespressif32</span> bt <span class="hl">esp-sr</span>)</pre>
+        <p style="margin-top:10px">IDF 构建系统接管全局，Arduino 核心以组件身份被依赖 —— <code>setup()</code> / <code>loop()</code> 照常可用。</p>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:18px">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--warn)"></span>顺带解掉 <code>-Werror</code></h3>
+        <p>esp-sr 源码带有 <code>format-truncation</code> / <code>maybe-uninitialized</code> 告警。严格模式下第三方库的告警会让<b style="color:var(--text-primary)">整个项目构建失败</b> —— 不是自己的代码，只能豁免。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s4)"></span>版本锁定的教训</h3>
+        <p>ESP8266Audio 固定 <code>1.9.7</code>：git 主分支已改用 IDF 5.x 的 <code>driver/i2s_std.h</code>，而 arduino-esp32 v2.0.17 基于 IDF 4.4，只有旧版 <code>driver/i2s.h</code>。<b style="color:var(--text-primary)">不锁版本，某天 CI 会突然红。</b></p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 07 分区表 ============ -->
+<section class="slide" data-notes="【口播】加了语音之后，Flash 分区表必须重画。<br>
+原来的分区很简单，两个 app 分区各 2MB，剩下全给 SPIFFS 放字库。加上 esp-sr 之后两个问题：第一，esp-sr 的静态库非常大，链进去之后固件体积超过 2MB，app 分区装不下；第二，唤醒词模型本身要 290KB，得有地方放。<br>
+所以新分区表：app 分区从 2MB 扩到 4MB，单独切一个 2MB 的 model 分区放模型，剩下 6MB 给字库和其他资源。<br>
+<em>这里有个坑：SPIFFS 现在有两个分区了。</em>原来代码里 SPIFFS.begin(false) 不指定标签，它会挂载第一个找到的 SPIFFS 分区 —— 现在第一个是 model 分区，字库就读不到了。所以必须显式写成 SPIFFS.begin(false, \"/spiffs\", 10, \"spiffs\") 指定标签。这一行改动，就是我上传固件后屏幕变成一堆方块的原因。">
+  <div class="eyebrow">Build · 分区</div>
+  <h2>16MB Flash 重新划分</h2>
+  <p class="sub">esp-sr 让固件超过 2MB，唤醒词模型还要单独一块地</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card">
+        <h3 style="color:var(--text-muted)">改造前 · default_16MB.csv</h3>
+        <table style="margin-top:4px">
+          <tr><td class="k">app0 / app1</td><td class="num">2 MB × 2</td><td style="color:var(--crit);font-size:12px">装不下 esp-sr</td></tr>
+          <tr><td class="k">spiffs</td><td class="num">~11.9 MB</td><td style="font-size:12px">中文字库</td></tr>
+        </table>
+      </div>
+      <div class="card" style="border-color:var(--s1)">
+        <h3 style="color:var(--s1)">改造后 · partitions_esp_sr.csv</h3>
+        <table style="margin-top:4px">
+          <tr><td class="k">app0 / app1</td><td class="num">4 MB × 2</td><td style="color:var(--good);font-size:12px">容纳静态库</td></tr>
+          <tr><td class="k"><b style="color:var(--s4)">model</b></td><td class="num">2 MB</td><td style="color:var(--s4);font-size:12px">WakeNet9 模型</td></tr>
+          <tr><td class="k">spiffs</td><td class="num">~6 MB</td><td style="font-size:12px">中文字库</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px;border-color:var(--warn)">
+      <h3 style="color:var(--warn)">⚠ 连带故障：屏幕突然全是方块</h3>
+      <p style="margin-bottom:12px">分区表里现在有<b style="color:var(--text-primary)">两个 SPIFFS 类型的分区</b>（model 和 spiffs）。不带标签的 <code>SPIFFS.begin(false)</code> 会挂载<b style="color:var(--text-primary)">第一个找到的</b> —— 也就是 model 分区，于是中文字库读不出来，所有汉字渲染成方块。</p>
+      <pre style="background:var(--surface-3)"><span class="c">// 改前：挂到了 model 分区，字库读不到</span>
+<span class="k">if</span> (!SPIFFS.begin(<span class="k">false</span>)) { ... }
+
+<span class="c">// 改后：显式指定分区标签</span>
+<span class="k">if</span> (!SPIFFS.begin(<span class="k">false</span>, <span class="s">"/spiffs"</span>, <span class="n">10</span>, <span class="hl s">"spiffs"</span>)) { ... }</pre>
+      <div class="src">src/CjkFont.cpp:19</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 08 语音链路总览 ============ -->
+<section class="slide" data-notes="【口播】好，前面都是铺垫，从这页开始进入正题：一句「你好小智」到设备开口回话，中间到底发生了什么。<br>
+整条链路九步。我把它拆开讲，因为<em>每一步的边界在哪里，决定了用户体验好不好。</em><br>
+先快速过一遍：麦克风一直在录，但录的音频只喂给唤醒词模型，不上网 —— 这点很重要，没唤醒之前音频不出设备，隐私上说得过去。检测到唤醒词，WakeWord 释放麦克风，VoiceAssistant 接手，连 WebSocket。服务器连上大模型、配置好会话之后，回一个 session.ready，设备这时候才开麦、才响提示音。用户说话，音频以 640 字节一帧持续上传。服务器端 VAD 判断你说完了，大模型生成回复，音频以 PCM 流式回来，设备边收边播。<br>
+后面几页逐个拆这里面最容易做错的地方。">
+  <div class="eyebrow">Voice · 链路</div>
+  <h2>一句「你好小智」的完整旅程</h2>
+  <p class="sub">九个环节，每一步的边界都直接决定体验</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:13px">
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s3);font-family:var(--mono)">01</span> 端侧常听</h3>
+        <p style="font-size:13px">INMP441 持续采集 16kHz，仅喂给 WakeNet9 模型。<b style="color:var(--good)">未唤醒时音频不出设备</b></p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s3);font-family:var(--mono)">02</span> 唤醒命中</h3>
+        <p style="font-size:13px">阈值 0.52 / DET_MODE_95。命中即 <code>endMic()</code> 释放 I2S1</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s3);font-family:var(--mono)">03</span> 音乐淡出</h3>
+        <p style="font-size:13px">非阻塞 fadeOutPause，300ms 平滑消音，记住原曲待恢复</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s2);font-family:var(--mono)">04</span> 建链</h3>
+        <p style="font-size:13px">设备 → 后端 WebSocket，发 <code>session.start</code> 带 device_id</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s2);font-family:var(--mono)">05</span> 上游配置</h3>
+        <p style="font-size:13px">后端连 StepFun wss，注入人设 + 该设备记忆 + VAD 参数</p></div>
+      <div class="card" style="padding:15px 17px;border-color:var(--warn)"><h3 style="font-size:14.5px"><span style="color:var(--warn);font-family:var(--mono)">06</span> 就绪才开麦</h3>
+        <p style="font-size:13px"><b style="color:var(--warn)">收到 session.ready 才开麦 + 响「叮」</b>，早一步就吞字</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s1);font-family:var(--mono)">07</span> 音频上行</h3>
+        <p style="font-size:13px">640B/帧 PCM16 持续推流，服务端 VAD 判定断句</p></div>
+      <div class="card" style="padding:15px 17px"><h3 style="font-size:14.5px"><span style="color:var(--s1);font-family:var(--mono)">08</span> 流式回放</h3>
+        <p style="font-size:13px">24kHz PCM 边收边播，512KB 环形缓冲，预缓冲 100ms</p></div>
+      <div class="card" style="padding:15px 17px;border-color:var(--warn)"><h3 style="font-size:14.5px"><span style="color:var(--warn);font-family:var(--mono)">09</span> 播完才执行</h3>
+        <p style="font-size:13px"><b style="color:var(--warn)">确认语音播完</b>才切歌，否则自己打断自己</p></div>
+    </div>
+    <div class="card" style="margin-top:16px;background:var(--surface-3);border-color:var(--s3)">
+      <p style="font-size:14.5px"><b style="color:var(--s3)">贯穿全程的一条隐形约束：</b>
+      麦克风 I2S1 端口<b style="color:var(--text-primary)">同一时刻只能有一个驱动实例</b>。WakeWord 和 VoiceAssistant 必须严格交接 —— 这是后面「所有权」一页的主题。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 09 端侧唤醒 ============ -->
+<section class="slide" data-notes="【口播】先讲端侧唤醒这一步。<br>
+用的是乐鑫官方 esp-sr 里的 WakeNet9 模型，唤醒词「你好小智」，模型文件 290KB，烧在专门的 model 分区里。<br>
+两个参数值得说。DET_MODE_95 是检测模式，数字越大越激进、越容易被唤醒但误唤醒也多。我在这基础上还手动把阈值从默认值调到 0.52 —— <em>调这个值是个体力活，太高了喊三遍不理你，太低了看电视都能把它喊醒。</em><br>
+第二个是麦克风增益。看这段代码：INMP441 输出的是 24 位数据装在 32 位的槽里，我右移 11 位取有效部分，然后<em>还要再乘以 4</em>。为什么？因为实测下来 INMP441 在正常说话距离下的信号幅度偏低，不放大的话模型认为你在小声嘀咕，识别率很差。<br>
+这些数字都是拿真机一遍遍试出来的，代码里我留了 RMS 和削顶计数的日志，就是为了调这个。">
+  <div class="eyebrow">Voice · 端侧</div>
+  <h2>端侧唤醒：把「一直在听」关在设备里</h2>
+  <p class="sub">WakeNet9 + INMP441，290KB 模型常驻 —— 未唤醒时音频永不出网</p>
+  <div class="slide-body top">
+    <div style="display:grid;grid-template-columns:1fr 1.15fr;gap:18px">
+      <div>
+        <div class="grid2" style="gap:13px">
+          <div class="stat"><div class="label">唤醒词</div><div class="value" style="font-size:26px;color:var(--s3)">你好小智</div><div class="note">wn9_nihaoxiaozhi</div></div>
+          <div class="stat"><div class="label">模型体积</div><div class="value" style="color:var(--s4)">290<span class="unit">KB</span></div><div class="note">独立 model 分区</div></div>
+          <div class="stat"><div class="label">检测阈值</div><div class="value" style="color:var(--s1)">0.52</div><div class="note">实测调参，非默认</div></div>
+          <div class="stat"><div class="label">检测模式</div><div class="value" style="font-size:26px;color:var(--s1)">DET_95</div><div class="note">灵敏度档位</div></div>
+        </div>
+        <div class="card" style="margin-top:14px;background:var(--surface-3)">
+          <p style="font-size:13.5px"><b style="color:var(--warn)">调参的取舍：</b>阈值太高 → 喊三遍不理人；太低 → 电视声音都能误唤醒。代码里常驻打印 <code>rms</code> / <code>clip</code> / <code>peak</code> 日志，就是为了拿真机数据定这个值。</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>关键处理：24bit 装在 32bit 槽里，还要额外放大 4 倍</h3>
+        <pre style="margin-top:8px;font-size:12.5px"><span class="c">// INMP441 输出 24-bit 有效数据，承载在 32-bit I2S 时隙中。</span>
+<span class="c">// 直接按 16-bit 读取会落在无效低位，表现为持续全零。</span>
+cfg.bits_per_sample = <span class="hl">I2S_BITS_PER_SAMPLE_32BIT</span>;
+
+<span class="k">for</span> (<span class="k">int</span> i = <span class="n">0</span>; i &lt; count; ++i) {
+    <span class="k">int32_t</span> s = raw[i] <span class="hl">&gt;&gt; 11</span>;      <span class="c">// 取 24bit 有效位</span>
+    s <span class="hl">*= 4</span>;                      <span class="c">// 实测幅度偏低，再放大</span>
+    <span class="k">if</span> (s &gt; <span class="n">32767</span>) s = <span class="n">32767</span>;   <span class="c">// 饱和截断，防溢出回绕</span>
+    <span class="k">else if</span> (s &lt; -<span class="n">32768</span>) s = -<span class="n">32768</span>;
+    samples[i] = (<span class="k">int16_t</span>)s;
+}
+wakenet-&gt;detect(model, samples);</pre>
+        <div class="src">src/WakeWord.cpp:160-173</div>
+        <p style="margin-top:11px;font-size:13.5px">若不做 <code>*= 4</code>：模型认为用户在「小声嘀咕」，正常距离说话识别率显著下降。上行链路里同样有这段放大 —— 否则<b style="color:var(--text-primary)">服务端 VAD 会把正常说话判成静音</b>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 10 麦克风所有权 ============ -->
+<section class="slide" data-notes="【口播】这页讲一个很典型的嵌入式并发问题：<em>一个硬件资源，两个模块都想要。</em><br>
+麦克风挂在 I2S1 端口上。ESP-IDF 的 i2s_driver_install 对同一个端口只能装一次，装第二次直接返回错误。<br>
+但是我有两个模块要用麦克风：平时是 WakeWord 在用，一直录一直检测；一旦唤醒，就该 VoiceAssistant 用了，因为要把音频发到服务器。<br>
+如果不做协调会怎样？两种崩法：要么 VoiceAssistant 抢不到，用户说话没人收；要么两边同时读，DMA 缓冲区数据被撕成两半，两边拿到的都是残缺音频。<br>
+解法是严格的接力棒交接：唤醒命中 → WakeWord 先 endMic 卸载驱动 → 再通知 VoiceAssistant。而且 VoiceAssistant 这边装驱动失败不当成致命错误，会继续轮询重试 —— 因为卸载和安装之间可能有几毫秒的时间差，<em>把一次时序上的失败当成永久故障，会导致整个会话白白挂掉。</em>">
+  <div class="eyebrow">Voice · 并发</div>
+  <h2>一个麦克风，两个模块要抢</h2>
+  <p class="sub">I2S1 端口的驱动只能安装一次 —— 必须像交接力棒一样严格排序</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">✗ 不协调的两种崩法</h3>
+        <table style="margin-top:4px">
+          <tr><td class="k" style="width:130px">抢不到</td><td><code>i2s_driver_install</code> 返回错误，VoiceAssistant 开不了麦，<b style="color:var(--text-primary)">用户说话全丢</b></td></tr>
+          <tr><td class="k">同时读</td><td>两个任务从同一 DMA 缓冲取数，<b style="color:var(--text-primary)">音频被撕成两半</b>，双方都拿到残帧</td></tr>
+        </table>
+        <p style="margin-top:12px">设计文档里写死了一条铁律：<br>
+        <b style="color:var(--warn)">「No module may install the microphone driver until the previous owner confirms release.」</b></p>
+        <div class="src">docs/superpowers/specs/2026-08-11-voice-stability-design.md:35</div>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 交接时序</h3>
+        <div style="display:grid;gap:7px;font-size:13px;margin-top:6px">
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px"><b style="color:var(--s3);font-family:var(--mono)">1</b> &nbsp;WakeNet 检测到「你好小智」</div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px"><b style="color:var(--s3);font-family:var(--mono)">2</b> &nbsp;WakeWord <code>endMic()</code> 卸载 I2S 驱动</div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px"><b style="color:var(--s2);font-family:var(--mono)">3</b> &nbsp;VoiceAssistant 连接后端 WebSocket</div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px"><b style="color:var(--s2);font-family:var(--mono)">4</b> &nbsp;收到 <code>session.ready</code> 后才 <code>beginMicI2s()</code></div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px"><b style="color:var(--s1);font-family:var(--mono)">5</b> &nbsp;会话结束先卸载，WakeWord 才恢复</div>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;background:var(--surface-3)">
+      <h3><span class="dot" style="background:var(--warn)"></span>细节：安装失败要重试，不能当永久故障</h3>
+      <pre style="margin-top:8px;background:var(--surface-2);font-size:12.5px"><span class="c">// WakeWord 与 VoiceAssistant 共享 I2S 端口；若交接瞬间仍在释放，</span>
+<span class="c">// 后续轮询重试，避免把一次安装失败当成永久会话故障。</span>
+<span class="k">if</span> (beginMicI2s()) _state = State::Listening;</pre>
+      <div class="src">src/VoiceAssistant.cpp:290-295 &nbsp;·&nbsp; 卸载与安装之间存在毫秒级窗口，一次失败不代表会话失败</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 11 协议时序 ============ -->
+<section class="slide" data-notes="【口播】这是设备和后端之间的完整协议，我把它设计得尽量薄。<br>
+上行只有三种：二进制的音频帧、session.start、playback.done。下行的事件类型多一些，但每一个都对应设备上一个明确的状态切换。<br>
+<em>重点看红框标出来的那一行：session.updated 才是就绪，session.created 不是。</em><br>
+这是我踩过的坑。StepFun 连上之后先回一个 session.created，意思只是「WebSocket 通了」。但我要配置人设、音色、VAD 参数，这些是通过 session.update 发过去的，要等它回 session.updated 才算真正生效。<br>
+如果在 created 的时候就开麦，用户前半句话是用默认音色和默认 VAD 参数处理的，行为不可预测。所以后端只在收到 session.updated 时才向设备发 session.ready。<br>
+后端的测试用例专门锁了这条 —— 设计文档里写着：「Server protocol tests prove session.created is not ready and session.updated is ready.」">
+  <div class="eyebrow">Voice · 协议</div>
+  <h2>设备 ↔ 后端 ↔ 大模型 三段协议</h2>
+  <p class="sub">上行只有三种消息，下行每个事件对应一次明确的状态迁移</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>设备 → 后端（上行）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:150px"><code>binary</code></td><td>PCM16 音频帧，<b style="color:var(--text-primary)">≤4096B 且必须偶数字节</b></td></tr>
+          <tr><td class="k"><code>session.start</code></td><td>携带 <code>device_id</code>，用于记忆隔离</td></tr>
+          <tr><td class="k"><code>playback.done</code></td><td>本轮播完，请求清空上游输入缓冲</td></tr>
+        </table>
+      </div>
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>后端 → 设备（下行）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:150px"><code>session.ready</code></td><td>→ 开麦 + 响提示音</td></tr>
+          <tr><td class="k"><code>speech.started</code></td><td>→ 状态切 UserSpeaking</td></tr>
+          <tr><td class="k"><code>speech.stopped</code></td><td>→ 关麦，等回复</td></tr>
+          <tr><td class="k"><code>transcript.user</code></td><td>→ 屏幕显示「你说了什么」</td></tr>
+          <tr><td class="k"><code>binary</code></td><td>→ 24kHz PCM 流式播放</td></tr>
+          <tr><td class="k"><code>audio.done</code></td><td>→ 收流结束，等缓冲排空</td></tr>
+          <tr><td class="k"><code>command</code></td><td>→ 播完后执行播放器动作</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;border-color:var(--crit)">
+      <h3 style="color:var(--crit)">⛔ 最关键的一行：<code>session.created</code> 不等于就绪</h3>
+      <pre style="margin-top:8px;background:var(--surface-3);font-size:12.5px"><span class="c"># session.created 只代表 WebSocket 会话建立；设备必须等配置真正</span>
+<span class="c"># 生效后再开麦，否则首轮录音可能使用默认音色/VAD 参数。</span>
+<span class="k">if</span> event_type == <span class="hl s">"session.updated"</span>:
+    <span class="k">return</span> <span class="s">"json"</span>, {<span class="s">"type"</span>: <span class="hl s">"session.ready"</span>}</pre>
+      <div class="src">server/realtime.py:64-68 &nbsp;·&nbsp; 后端测试用例专门锁定这条契约</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 12 提示音时机 ============ -->
+<section class="slide" data-notes="【口播】接着上一页，说说那个「叮」的提示音。这是我最想讲的一个细节，因为它完美体现了<em>什么叫「技术正确但体验错误」。</em><br>
+最直觉的做法：检测到唤醒词，立刻响一声「叮」告诉用户「我在听」。逻辑上没毛病，响应还特别快。<br>
+但实际用起来是这样的：你说「你好小智」，叮，你马上接着说「今天天气怎么样」—— 结果它只听到了「天气怎么样」，前面几个字没了。<br>
+为什么？因为「叮」响的时候，WebSocket 还在握手，服务器那边会话还没配好，麦克风<em>压根还没打开</em>。用户听到提示音以为可以说话了，但设备实际上还聋着。<br>
+所以我把提示音挪到了 session.ready 的处理里 —— 服务器就绪、麦克风已开，这时候才响。<em>代价是唤醒到提示音之间多了几百毫秒的延迟，但「叮」这个声音的承诺变成了真的：响起来的那一刻，你说的每个字都能被收到。</em><br>
+我觉得这是这个项目里最能说明「产品思维」的一次改动。">
+  <div class="eyebrow">Voice · 体验</div>
+  <h2>「叮」应该在什么时候响？</h2>
+  <p class="sub">一个技术上完全正确、体验上完全错误的设计</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">✗ 直觉方案：唤醒即响</h3>
+        <p style="margin-bottom:12px">检测到唤醒词 → 立刻「叮」→ 用户开口说话。<br>响应最快，逻辑最直白。</p>
+        <div style="background:#2a1214;border:1px solid var(--crit);border-radius:9px;padding:12px 14px;font-size:13.5px;line-height:1.75">
+          <b style="color:var(--crit)">实际发生的事</b><br>
+          <span style="color:var(--text-secondary)">用户：「你好小智」→ <b style="color:var(--text-primary)">叮</b> →「今天天气怎么样」</span><br>
+          <span style="color:var(--text-secondary)">设备收到：</span><b style="color:var(--crit)">「天气怎么样」</b><br>
+          <span style="color:var(--text-muted);font-size:12.5px">「叮」响时 WebSocket 仍在握手，麦克风根本没开</span>
+        </div>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 实际方案：就绪才响</h3>
+        <p style="margin-bottom:12px">提示音移到 <code>session.ready</code> 的处理分支里 —— 上游会话已配置生效、麦克风已安装完毕。</p>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="k">if</span> (!strcmp(type, <span class="s">"session.ready"</span>)) {
+    _sessionReady = <span class="k">true</span>;
+    <span class="k">if</span> (beginMicI2s()) {
+        _state = State::Listening;
+        <span class="k">if</span> (!_greeted) {
+            _greeted = <span class="k">true</span>;
+            AudioPlayer.<span class="hl">playBeep</span>();  <span class="c">// 此刻才响</span>
+        }
+    }
+}</pre>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;background:var(--surface-3);border-color:var(--s3)">
+      <p style="font-size:14.5px;line-height:1.8"><b style="color:var(--s3)">代码注释原文 —— 这段话就是这次改动的全部理由：</b><br>
+      <span style="color:var(--text-secondary)">「提示音放在这里而非唤醒瞬间：此刻上游会话已就绪、麦克风已开，<b style="color:var(--text-primary)">『叮』响起时说的每个字都能被收到</b>，不会像连接前提示那样吞字。仅本轮会话的第一次就绪才响，连续对话的后续轮次不重复提示。」</span></p>
+      <div class="src">src/VoiceAssistant.cpp:165-171 &nbsp;·&nbsp; 代价是多几百毫秒延迟，换来提示音的承诺是真的</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 13 音量渐变 ============ -->
+<section class="slide" data-notes="【口播】刚才提到唤醒的时候音乐是淡出的。这个「淡出」看起来是个纯装饰的效果，但实现方式很讲究。<br>
+先说为什么要淡出。骤停很突兀，像有人猛地拔了电源；淡出 300ms，感觉就像手机来电时音乐自动降下去，很自然。<br>
+但<em>关键问题是：谁来执行这个渐变？</em><br>
+最简单的写法是一个 for 循环，每隔几毫秒降一点音量，睡一下，再降一点。问题在于调用 fadeOutPause 的是谁 —— 是 WakeWord 任务，或者是按键处理，这些都在 UI 相关的执行路径上。<em>你在这里 delay 300 毫秒，整个界面就卡死 300 毫秒。</em><br>
+所以做成了非阻塞：调用方只记录「从哪个音量、到哪个音量、用多长时间、什么时候开始」，然后立刻返回。真正的推进放在音频任务的主循环里，每轮算一次线性插值。音频任务本来就在高频跑，加这一个判断几乎是零成本。<br>
+还有个细节我很喜欢：渐变过程中的音量值<em>绝对不能写进 NVS</em>。因为那不是用户设定的音量，写进去既伤 Flash 寿命，又会导致「恢复原音量」时取到错误的基准 —— 你淡出到 0 的时候把 0 存了，恢复的时候就恢复到 0，音乐再也回不来了。">
+  <div class="eyebrow">Audio · 交互细节</div>
+  <h2>音乐淡出：一个不能阻塞的动画</h2>
+  <p class="sub">调用方在 UI 路径上 —— 睡 300ms 等渐变，界面就卡 300ms</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">✗ 阻塞式渐变</h3>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="k">for</span> (<span class="k">int</span> v = cur; v &gt;= <span class="n">0</span>; v -= <span class="n">2</span>) {
+    applyGain(v);
+    delay(<span class="n">6</span>);          <span class="c">// ← 调用方在这里睡了 300ms</span>
+}
+pause();</pre>
+        <p style="margin-top:11px">调用方是 <b style="color:var(--text-primary)">WakeWord 任务 / 按键处理</b> —— 都在 UI 执行路径上。整个界面冻结一次渐变的时长，掉帧肉眼可见。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 非阻塞：记录意图，立即返回</h3>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="c">// 调用方（UI 线程）—— 只记录，不等待</span>
+_fadeFrom = _gainPercent;
+_fadeTarget = target;
+_fadeDurationMs = durationMs;
+_fadeStartMs = millis();   <span class="c">// 0 表示"未在渐变"</span>
+
+<span class="c">// 音频任务每轮推进一步（线性插值）</span>
+<span class="k">void</span> serviceFade() {
+    <span class="k">if</span> (_fadeStartMs == <span class="n">0</span>) <span class="k">return</span>;  <span class="c">// 极廉价的判断</span>
+    ...applyGain(插值结果);
+}</pre>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;border-color:var(--warn)">
+      <h3 style="color:var(--warn)">⚠ 隐藏的坑：渐变中的音量值绝不能写进 NVS</h3>
+      <pre style="margin-top:8px;background:var(--surface-3);font-size:12.5px"><span class="c">// 只改输出增益，不碰 _volDirtyMs：渐变的中间值不是用户设定，</span>
+<span class="c">// 不该写进 NVS（既伤 flash，也会让"恢复原音量"取到错误基准）。</span>
+<span class="k">void</span> AudioPlayerClass::<span class="hl">applyGain</span>(<span class="k">uint8_t</span> percent) { ... }   <span class="c">// ← 临时增益</span>
+<span class="k">void</span> AudioPlayerClass::<span class="hl">setVolume</span>(<span class="k">uint8_t</span> percent) { ... }  <span class="c">// ← 用户音量，持久化</span></pre>
+      <p style="margin-top:11px">若混用：淡出到 0 时把 <b style="color:var(--text-primary)">0 存进 NVS</b> → 会话结束「恢复原音量」恢复到 0 → <b style="color:var(--crit)">音乐再也回不来了</b>。加上每次渐变几十次写入，Flash 寿命也扛不住。</p>
+      <div class="src">src/AudioPlayer.cpp:380-416</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 14 PCM 双通道 ============ -->
+<section class="slide" data-notes="【口播】现在讲音频播放器的架构。这个模块要同时伺候两种完全不同的音频源。<br>
+一种是音乐：一个 HTTP URL，MP3 或者 FLAC 编码，需要流式下载 + 解码 + 重采样到 44.1kHz 输出。<br>
+另一种是语音回复：服务器推过来的裸 PCM 数据，24kHz，不需要解码，但是<em>边收边播</em>，而且不知道总长度。<br>
+这两种模式共用同一个 I2S 输出。我的做法是在播放器里开两条路：解码通道走 ESP8266Audio 的库，PCM 通道走一个 512KB 的环形缓冲区。<br>
+环形缓冲这里有个参数值得说：预缓冲 100 毫秒。<em>为什么不是收到数据立刻播？</em>因为 WiFi 有抖动，第一个包到了就播，第二个包晚到 20 毫秒，声音就断一下。先攒 100 毫秒再开播，用一点点延迟换取整段回复不卡顿。<br>
+还有个设计我想强调：语音提示音播完之后，<em>绝对不能触发「播放结束」事件</em>。因为主循环监听这个事件来自动切下一首歌 —— 如果 TTS 播完也报「结束」，主循环就以为歌播完了，会自动切歌。用户问了个问题，答完之后歌莫名其妙换了一首。">
+  <div class="eyebrow">Audio · 架构</div>
+  <h2>一个播放器，两条完全不同的通路</h2>
+  <p class="sub">音乐要解码，语音要直通 —— 共用同一个 I2S 输出口</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>通道 A · 音乐（解码）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px">数据源</td><td>HTTP 流式拉取，长度已知</td></tr>
+          <tr><td class="k">编码</td><td>MP3 / FLAC，libmad / libFLAC 解码</td></tr>
+          <tr><td class="k">缓冲</td><td><b style="color:var(--text-primary)">256KB</b> 流缓冲（PSRAM）</td></tr>
+          <tr><td class="k">输出</td><td>重采样至 44.1kHz</td></tr>
+          <tr><td class="k">结束</td><td>置 <code>finished</code> → 主循环自动切下一首</td></tr>
+        </table>
+      </div>
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>通道 B · 语音（PCM 直通）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px">数据源</td><td>WebSocket 推送，<b style="color:var(--text-primary)">长度未知</b></td></tr>
+          <tr><td class="k">编码</td><td>裸 PCM16，无需解码</td></tr>
+          <tr><td class="k">缓冲</td><td><b style="color:var(--text-primary)">512KB</b> 环形缓冲（PSRAM）</td></tr>
+          <tr><td class="k">输出</td><td>24kHz 直出</td></tr>
+          <tr><td class="k">结束</td><td><b style="color:var(--warn)">不置 finished</b> —— 见下方</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s3)"></span>预缓冲 100ms：拿延迟换连续</h3>
+        <p>收到第一个 PCM 包就播 → WiFi 抖动导致第二包晚到 → <b style="color:var(--text-primary)">声音断一下</b>。先攒 <code>kPcmPrebufferMs = 100</code> 再起播，用 100ms 延迟换整段回复不卡。</p>
+      </div>
+      <div class="card" style="border-color:var(--warn)">
+        <h3 style="color:var(--warn)">⚠ 为什么 TTS 播完不能报「结束」</h3>
+        <p>主循环靠 <code>finished</code> 事件自动切下一首。若 TTS 播完也置位 → <b style="color:var(--text-primary)">用户问完一个问题，歌莫名其妙换了一首</b>。</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;background:var(--surface-3)">
+      <p style="font-size:13.5px"><b style="color:var(--s3)">提示音也在 PSRAM 里：</b>880Hz 正弦波 200ms，开机时用 <code>ps_malloc</code> 合成一段完整 WAV（含 44 字节头）常驻内存，之后每次「叮」都复用同一份 —— <b style="color:var(--text-primary)">零网络依赖、零文件读取</b>。</p>
+      <div class="src">src/AudioPlayer.cpp:106-130 · buildBeepWav()</div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 15 指令执行时序 ============ -->
+<section class="slide" data-notes="【口播】第三个体验细节：语音控制播放器的时序。<br>
+场景是这样：你说「下一首」，它应该回一句「好的，为你切换」，然后切歌。<br>
+<em>如果收到指令立刻执行会怎样？</em>后端把 command 事件和 TTS 音频几乎同时发过来。设备一收到 command 就调 MusicService.next()，音乐播放器立刻开始拉新歌的流并播放 —— 而这时候「好的，为你切换」这句话才播到一半，直接被新歌盖掉了。<br>
+用户体验就是：说「下一首」，听到「好的，为...」然后突然一首歌开始放。很廉价的感觉。<br>
+所以指令要暂存。看这段代码：收到 command 只是记在 _pendingCommand 里，然后等两个条件同时满足 —— audioDone 表示服务器说音频发完了，isPromptActive 为 false 表示本地缓冲也排空了 —— 这时候才真正执行。<br>
+<em>注意这两个条件缺一不可</em>：服务器发完不等于播完，512KB 缓冲区里可能还积着一秒钟的音频。">
+  <div class="eyebrow">Voice · 时序</div>
+  <h2>「下一首」为什么不能立刻切</h2>
+  <p class="sub">确认语音和执行动作抢同一个扬声器</p>
+  <div class="slide-body">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">✗ 收到指令立即执行</h3>
+        <div style="display:grid;gap:6px;font-size:13px;margin-top:6px">
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px">用户：「下一首」</div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px">后端几乎同时下发 <code>command</code> + TTS 音频</div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:8px 11px">设备立刻 <code>MusicService.next()</code></div>
+          <div style="background:#2a1214;border:1px solid var(--crit);border-radius:7px;padding:8px 11px">
+            听感：「好的，为—」<b style="color:var(--crit)">［被新歌盖掉］</b></div>
+        </div>
+        <p style="margin-top:12px">确认语音被自己触发的动作打断 —— <b style="color:var(--text-primary)">设备在跟自己抢扬声器</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 暂存指令，播完再执行</h3>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="c">// 收到时只登记，不执行</span>
+_pendingCommand = PendingCommand::Next;
+
+<span class="c">// 两个条件同时满足才动手：</span>
+<span class="k">if</span> (_audioDone <span class="hl">&amp;&amp;</span> !AudioPlayer.isPromptActive()) {
+    <span class="c">// ① 服务器音频发完  ② 本地缓冲排空</span>
+    VoiceWebSocket.sendEvent(<span class="s">"playback.done"</span>);
+    <span class="k">if</span> (command == Next) MusicService.next();
+    ...
+}</pre>
+        <p style="margin-top:11px"><b style="color:var(--warn)">两个条件缺一不可：</b>服务器发完 ≠ 播完，512KB 环形缓冲里可能还积着一秒钟的音频。</p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:18px;background:var(--surface-3)">
+      <h3>支持的指令与「诚实失败」</h3>
+      <table style="margin-top:4px;font-size:13px">
+        <tr><td class="k" style="width:210px"><code>next</code> / <code>prev</code> / <code>play</code> / <code>pause</code></td><td>切歌与播放控制</td><td style="color:var(--good)">✓ 已实现</td></tr>
+        <tr><td class="k"><code>volume_up</code> / <code>volume_down</code></td><td>步进 5%，写入 NVS 持久化</td><td style="color:var(--good)">✓ 已实现</td></tr>
+        <tr><td class="k"><code>play_song</code>（点播指定歌曲）</td><td>需要 MusicService 搜索接口，当前后端不具备</td><td style="color:var(--warn)">⚠ 明确上报不支持</td></tr>
+      </table>
+      <p style="margin-top:11px;font-size:13.5px"><b style="color:var(--warn)">设计文档明确要求：</b><span style="color:var(--text-secondary)">「If the current backend lacks this endpoint, the device reports the command as <b style="color:var(--text-primary)">unsupported</b> instead of claiming successful playback.」—— 宁可说「做不到」，也不假装成功。</span></p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 16 任务与分核 ============ -->
+<section class="slide" data-notes="【口播】这页把整个系统的并发结构摊开。五个 FreeRTOS 任务，加上 Arduino 的 loop。<br>
+<em>分核的原则是：会卡的东西和不能卡的东西，分开放。</em><br>
+core 1 放两样：Arduino loop 负责 UI 刷新，以及唤醒词检测。这两个都要求实时响应 —— 界面卡了用户立刻能看出来，唤醒词晚了用户会以为设备坏了。<br>
+core 0 放三样：音频解码、音乐服务、天气。这三个都是「慢活」，解码 FLAC 要吃 CPU，HTTPS 握手要等网络。它们互相挤没关系，但绝对不能挤到 UI。<br>
+栈大小也都是有讲究的，注释里都写了原因。音乐服务给到 20KB，因为 HTTPS 的 mbedTLS 握手、JSON 解析、JPEG 封面解码全在这一个任务的调用链里叠加，栈给少了会 Stack canary 溢出直接重启。音频任务 10KB，是因为 libFLAC 每帧解码的调用链比 libmad 更深。<br>
+<em>这些数字不是拍脑袋定的</em>，代码里有打印栈的高水位线的日志，是跑出来调的。">
+  <div class="eyebrow">RTOS · 并发</div>
+  <h2>五个任务，两个核，谁也别挡谁的路</h2>
+  <p class="sub">分核原则：会卡的活和不能卡的活，物理隔离</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>Core 1 · 实时优先（不能卡）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><th>任务</th><th class="num">栈</th><th class="num">优先级</th><th>理由</th></tr>
+          <tr><td class="k">Arduino loop</td><td class="num">12 KB</td><td class="num">—</td><td>UI 刷新，卡了肉眼可见</td></tr>
+          <tr><td class="k">wake</td><td class="num">12 KB</td><td class="num">3</td><td>唤醒延迟直接等于「设备坏了」</td></tr>
+        </table>
+      </div>
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span class="dot" style="background:var(--s1)"></span>Core 0 · 吞吐优先（允许慢）</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><th>任务</th><th class="num">栈</th><th class="num">优先级</th><th>理由</th></tr>
+          <tr><td class="k">audio</td><td class="num">10 KB</td><td class="num">2</td><td>libFLAC 调用链比 libmad 更深</td></tr>
+          <tr><td class="k">voice</td><td class="num">12 KB</td><td class="num">2</td><td>采集 + WebSocket 收发</td></tr>
+          <tr><td class="k">ncm</td><td class="num">20 KB</td><td class="num">2</td><td>TLS+JSON+JPEG 三者叠加</td></tr>
+          <tr><td class="k">weather</td><td class="num">6 KB</td><td class="num">2</td><td>只解析小 JSON</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s4)"></span>栈大小是量出来的，不是猜的</h3>
+        <pre style="background:var(--surface-2);font-size:12.5px"><span class="c">// 20KB 栈：HTTPS（mbedTLS 握手）+ JSON 解析 + JPEG</span>
+<span class="c">// 封面解码调用链都在这一个任务里叠加；</span>
+<span class="c">// 栈给足避免 Stack canary 溢出重启。</span></pre>
+        <p style="margin-top:10px;font-size:13px">运行时常驻打印高水位线：<br><code>uxTaskGetStackHighWaterMark()</code> → 按实测收敛。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--crit)"></span>任务创建失败不再静默</h3>
+        <pre style="background:var(--surface-2);font-size:12.5px"><span class="k">if</span> (!_lock || xTaskCreatePinnedToCore(...) != pdPASS) {
+    _task = <span class="k">nullptr</span>;
+    Serial.println(<span class="s">"[NCM] task creation failed"</span>);
+    <span class="k">return</span>;   <span class="c">// 早暴露，别留一个半死的模块</span>
+}</pre>
+        <p style="margin-top:10px;font-size:13px">内存紧张时创建会失败。<b style="color:var(--text-primary)">静默继续 = 后面某处莫名其妙的空指针。</b></p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 17 内存战争 ============ -->
+<section class="slide" data-notes="【口播】这页是整个项目最硬核的部分：内存。<br>
+ESP32-S3 的内部 SRAM 只有 512KB，这是所有 DMA、TLS 握手、任务栈唯一能用的地方。PSRAM 有 8MB，但它有限制 —— DMA 不能直接用，TLS 握手也要求内部内存。<br>
+所以策略很明确：<em>凡是能放 PSRAM 的，一律 ps_malloc。</em>你看这三块大头：256KB 流缓冲、512KB PCM 环形缓冲、提示音 WAV，全在 PSRAM。这加起来 768KB，放内部内存想都别想。<br>
+但真正难的是<em>内部内存的争抢</em>。mbedTLS 握手一次要吃掉几十 KB 的连续内部内存，注意是<em>连续</em>。语音的 WebSocket 要握手，天气的 HTTPS 要握手，音乐服务的 HTTPS 也要握手。三个同时来，就算总量够，也可能因为碎片化找不到一块足够大的连续块，报 mbedTLS memory allocation failed。<br>
+解法很朴素：让路。天气任务在语音会话激活期间直接不发请求。你看这段代码和注释 —— 「Realtime 建链和天气 HTTPS 都需要较大的连续内部堆。语音优先。」<br>
+天气晚十分钟刷新用户根本不在意，语音连不上用户立刻就炸了。<em>优先级排序要按用户感知，不是按技术难度。</em>">
+  <div class="eyebrow">Memory · 内存</div>
+  <h2>512KB 内部 SRAM 的争夺战</h2>
+  <p class="sub">PSRAM 有 8MB，但 DMA 和 TLS 握手只认内部内存</p>
+  <div class="slide-body top">
+    <div class="grid4">
+      <div class="stat"><div class="label">内部 SRAM</div><div class="value" style="color:var(--crit)">512<span class="unit">KB</span></div><div class="note">DMA / TLS / 任务栈</div></div>
+      <div class="stat"><div class="label">外部 PSRAM</div><div class="value" style="color:var(--good)">8<span class="unit">MB</span></div><div class="note">大缓冲区专用</div></div>
+      <div class="stat"><div class="label">音频流缓冲</div><div class="value" style="color:var(--s1)">256<span class="unit">KB</span></div><div class="note">ps_malloc</div></div>
+      <div class="stat"><div class="label">PCM 环形缓冲</div><div class="value" style="color:var(--s2)">512<span class="unit">KB</span></div><div class="note">ps_malloc</div></div>
+    </div>
+
+    <div class="card" style="margin-top:18px;border-color:var(--crit)">
+      <h3 style="color:var(--crit)">⛔ 真正的杀手：连续内部内存不足</h3>
+      <p style="margin-bottom:11px">mbedTLS 握手需要<b style="color:var(--text-primary)">几十 KB 的连续内部堆</b>。语音 WebSocket、天气 HTTPS、音乐 HTTPS 三路同时握手 —— 即使总量够，<b style="color:var(--crit)">碎片化也会导致找不到足够大的连续块</b> → <code>mbedTLS memory allocation failed</code>。</p>
+      <pre style="background:var(--surface-3);font-size:12.5px"><span class="c">// Realtime 建链和天气 HTTPS 都需要较大的连续内部堆。语音优先，</span>
+<span class="c">// 避免再次出现 mbedTLS memory allocation failed。</span>
+<span class="k">if</span> (VoiceAssistant.enabled()) {
+    vTaskDelay(pdMS_TO_TICKS(<span class="n">1000</span>));
+    <span class="k">continue</span>;                     <span class="c">// 天气整轮跳过，给语音让路</span>
+}</pre>
+      <div class="src">src/Weather.cpp:260-266</div>
+    </div>
+
+    <div class="grid2" style="margin-top:16px">
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--good)"></span>让路的判断依据：用户感知</h3>
+        <p>天气晚 10 分钟刷新 —— <b style="color:var(--text-primary)">用户根本不会发现</b>。<br>语音连不上 —— <b style="color:var(--text-primary)">用户立刻就炸</b>。<br>优先级按感知排，不按技术难度排。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s4)"></span>联网后延迟 6 秒再取天气</h3>
+        <p><code>kInitialDelayMs = 6000</code> —— 开机联网瞬间，音乐服务和 TLS 初始化正在抢内存。<b style="color:var(--text-primary)">主动错开启动峰值</b>，而不是失败后重试。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 18 天气退避 ============ -->
+<section class="slide" data-notes="【口播】顺着上一页，讲讲天气模块的容错。这是个小模块，但改动很能说明「什么叫防御性编程」。<br>
+原来的逻辑很粗暴：请求失败了，就把界面上的天气清空，显示「未获取」，然后 60 秒后重试。<br>
+问题在哪？WiFi 抖一下、或者语音正在占内存导致这一次 HTTPS 失败 —— 界面上好好的天气「唰」一下变成空的。过一分钟又回来了。用户看到的就是界面在闪。<br>
+<em>但天气数据 10 分钟前拿到的那份，其实完全还能看啊。</em>失败不代表旧数据失效。<br>
+所以改成：失败时保留上次成功的快照，只有从来没成功过才显示空状态。<br>
+重试策略也从固定 60 秒改成指数退避：15 秒、30 秒、1 分钟…最多 5 分钟封顶。<em>如果是网络长时间不通，固定 60 秒重试就是在持续消耗内存和 CPU，而且每次都失败。</em>退避能让设备在网络恢复前保持安静。<br>
+还有一个细节：原来失败之后会把「已定位」标志清掉，下次要重新做 IP 定位。但换 WiFi 才需要重新定位，普通的请求失败不需要 —— 这是把两件事混为一谈了。">
+  <div class="eyebrow">Resilience · 容错</div>
+  <h2>失败了，但别把好数据扔掉</h2>
+  <p class="sub">天气模块的三处修正 —— 小模块，典型的防御性编程</p>
+  <div class="slide-body">
+    <div class="card" style="margin-bottom:16px">
+      <table>
+        <tr><th style="width:170px">问题</th><th>改造前</th><th>改造后</th></tr>
+        <tr><td class="k">失败即清空</td>
+            <td>请求失败 → 界面天气清空显示「未获取」<br><span style="color:var(--crit);font-size:12px">WiFi 抖一下，界面就闪一次</span></td>
+            <td><b style="color:var(--good)">保留上次成功快照</b>，只有从未成功过才显示空态<br><span style="color:var(--text-muted);font-size:12px">10 分钟前的天气依然可看</span></td></tr>
+        <tr><td class="k">固定重试</td>
+            <td>失败后固定 60 秒重试<br><span style="color:var(--crit);font-size:12px">断网时持续消耗内存与 CPU</span></td>
+            <td><b style="color:var(--good)">指数退避</b> 15s → 30s → 1m → … → <b>5m 封顶</b><br><span style="color:var(--text-muted);font-size:12px">成功后立即重置回 15s</span></td></tr>
+        <tr><td class="k">牵连定位</td>
+            <td>请求失败 → 清掉「已定位」标志 → 下轮重新 IP 定位<br><span style="color:var(--crit);font-size:12px">把「换网络」和「请求失败」混为一谈</span></td>
+            <td><b style="color:var(--good)">仅断网时重置定位</b><br><span style="color:var(--text-muted);font-size:12px">普通失败不触发多余的定位请求</span></td></tr>
+      </table>
+    </div>
+    <div class="grid2">
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s3)"></span>保留快照的实现</h3>
+        <pre style="background:var(--surface-2);font-size:12.5px"><span class="k">if</span> (ok) {
+    publish(<span class="k">true</span>);
+    retryMs = kRetryInitialMs;    <span class="c">// 成功即重置退避</span>
+} <span class="k">else</span> {
+    <span class="c">// 短暂网络/TLS 失败时继续显示上次成功数据。</span>
+    Snapshot current; snapshot(current);
+    <span class="k">if</span> (!current.valid) publish(<span class="k">false</span>);  <span class="c">// 仅从未成功过</span>
+}</pre>
+        <div class="src">src/Weather.cpp:268-277</div>
+      </div>
+      <div class="card" style="background:var(--surface-3)">
+        <h3><span class="dot" style="background:var(--s4)"></span>可观测性：把内存打出来</h3>
+        <pre style="background:var(--surface-2);font-size:12.5px"><span class="c">// TLS 握手前后都打印，定位「到底是谁吃了内存」</span>
+Serial.printf(<span class="s">"[WX] TLS before internal=%u largest=%u psram=%u\n"</span>,
+  heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+  <span class="hl">heap_caps_get_largest_free_block</span>(MALLOC_CAP_INTERNAL),
+  ESP.getFreePsram());</pre>
+        <p style="margin-top:10px;font-size:13px"><b style="color:var(--text-primary)">最大连续块</b>比剩余总量更有诊断价值 —— 碎片化时两者会严重背离。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 19 字库爆音（本期最佳） ============ -->
+<section class="slide" data-notes="【口播】<em>接下来这个 bug，是整个项目里我最想分享的一个。因为它的因果链非常长，长到你根本不会往那个方向想。</em><br>
+现象：播放音乐的时候，屏幕上歌词一滚动，喇叭就「刺啦」一下。歌词不动的时候声音完全正常。<br>
+你会怎么排查？我一开始以为是电源问题、是接地问题、是 SPI 和 I2S 抢总线。全不是。<br>
+真正的原因是这样一条链：中文字库存在 SPIFFS 里，也就是 Flash 上。渲染一个汉字要去 Flash 读字形数据。<em>而 ESP32 从 SPIFFS 读数据的时候，会临时暂停两个核心的 Flash 缓存。</em><br>
+关键来了：MP3 解码的代码本身也跑在 Flash 里，走的是同一套 Flash 缓存。缓存一暂停，解码代码就停摆几毫秒。解码停了，I2S 的 DMA 缓冲区就欠载，喇叭里出来的就是「刺啦」。<br>
+所以这是一条：<b>画个汉字 → 读 Flash → Flash 缓存暂停 → 解码代码停摆 → I2S 欠载 → 爆音</b> 的因果链。屏幕和喇叭之间根本没有直接关系，但它们通过 Flash 缓存耦合在了一起。<br>
+解法很干脆：开机时把整个字库一次性全部读进 PSRAM，16 像素字库 485KB，PSRAM 有 8MB 完全装得下。之后所有绘制路径<em>完全不碰 Flash</em>，杂音源头直接消失。<br>
+这就是为什么我一直说，嵌入式的 bug 经常不在你看到现象的那个模块里。">
+  <div class="eyebrow">Debug · 因果链</div>
+  <h2>歌词一滚动，喇叭就「刺啦」</h2>
+  <p class="sub">屏幕和喇叭之间没有任何直接关系 —— 但它们共用同一套 Flash 缓存</p>
+  <div class="slide-body">
+    <div class="card" style="border-color:var(--crit);margin-bottom:16px">
+      <h3 style="color:var(--crit)">现象：歌词滚动时出现爆音，歌词静止时声音完全正常</h3>
+      <p style="margin-top:6px">直觉方向全是错的 —— 电源纹波？接地回流？SPI 与 I2S 抢总线？<b style="color:var(--text-primary)">都不是。</b></p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px">
+      <div class="card" style="padding:13px;text-align:center;background:var(--surface-3)">
+        <div style="font-size:12px;color:var(--s1);font-weight:700;margin-bottom:5px">① 绘制</div>
+        <div style="font-size:12.5px;color:var(--text-secondary)">渲染一个汉字</div></div>
+      <div class="card" style="padding:13px;text-align:center;background:var(--surface-3)">
+        <div style="font-size:12px;color:var(--s1);font-weight:700;margin-bottom:5px">② 读取</div>
+        <div style="font-size:12.5px;color:var(--text-secondary)">从 SPIFFS 取字形</div></div>
+      <div class="card" style="padding:13px;text-align:center;background:#2a1a12;border-color:var(--warn)">
+        <div style="font-size:12px;color:var(--warn);font-weight:700;margin-bottom:5px">③ 副作用</div>
+        <div style="font-size:12.5px;color:var(--text-primary)"><b>两个核的 Flash 缓存被暂停</b></div></div>
+      <div class="card" style="padding:13px;text-align:center;background:#2a1214;border-color:var(--crit)">
+        <div style="font-size:12px;color:var(--crit);font-weight:700;margin-bottom:5px">④ 波及</div>
+        <div style="font-size:12.5px;color:var(--text-primary)">跑在 flash 里的<b>解码代码停摆</b></div></div>
+      <div class="card" style="padding:13px;text-align:center;background:#2a1214;border-color:var(--crit)">
+        <div style="font-size:12px;color:var(--crit);font-weight:700;margin-bottom:5px">⑤ 现象</div>
+        <div style="font-size:12.5px;color:var(--text-primary)">I2S 欠载 → <b>爆音</b></div></div>
+    </div>
+
+    <div class="grid2">
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 解法：字库全量驻留 PSRAM</h3>
+        <p>开机时一次性把整个字库读进 PSRAM，之后<b style="color:var(--text-primary)">绘制路径完全不碰 Flash</b>。</p>
+        <table style="margin-top:9px;font-size:13px">
+          <tr><td class="k">16px 字库</td><td class="num">485 KB</td><td>3817 字</td></tr>
+          <tr><td class="k">32px 字库</td><td class="num">1.87 MB</td><td>8MB PSRAM 装得下</td></tr>
+          <tr><td class="k">索引表</td><td class="num">7.5 KB</td><td>常驻，优先 PSRAM</td></tr>
+        </table>
+        <p style="margin-top:9px;font-size:13px"><b style="color:var(--warn)">附带坑：</b>一次 <code>read</code> 近 2MB 在部分 SPIFFS 实现上会失败 —— 大块读取必须<b style="color:var(--text-primary)">分片进行</b>。</p>
+      </div>
+      <div class="card" style="background:var(--surface-3)">
+        <h3>注释原文</h3>
+        <pre style="background:var(--surface-2);font-size:12.5px;line-height:1.8"><span class="c">// 关键：把全部字形数据一次性载入 PSRAM
+// （16px 485KB / 32px 1.87MB，8MB PSRAM 装得下）。
+// 运行期从 SPIFFS 按需读会在每次读取时暂停两个核
+// 的 flash 缓存，跑在 flash 里的 MP3 解码代码随之
+// 停摆 → I2S 欠载 → 播放爆音。全量驻留后绘制路径
+// 完全不碰 flash，杂音源头被消除。</span></pre>
+        <div class="src">src/CjkFont.cpp:68-73</div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 20 局部刷新 ============ -->
+<section class="slide" data-notes="【口播】接着讲 UI。屏幕是 320×240，通过 SPI 连接。<br>
+<em>为什么不能整屏重绘？</em>算一下：320×240 个像素，每个 16 位色，一帧就是 150KB。SPI 传完这些要不少时间，如果每次刷新都全量传，帧率低到肉眼能看出闪烁，而且这段时间 SPI 总线被占满。<br>
+所以整个 Display 模块的核心思路是：<em>只重画变了的那一小块。</em><br>
+比如音乐播放页，进度条每秒变一次，那就只重画进度条那几个像素高的区域；歌词每几秒滚一行，就只重画歌词那一行；封面和标题只有切歌时才变，切歌时才重画。<br>
+实现上就是一堆 dirty 标志位和「上一帧值」的缓存。歌词那里用的是行指针缓存 —— 比对这一行的字符串指针跟上一帧是不是同一个，同一个就跳过。<br>
+<em>但这里埋着一个很隐蔽的 bug</em>，注释里写着：切歌的时候必须把行缓存一并作废。因为新歌的歌词数组是重新分配的，旧的指针指向的内存已经被释放了 —— 如果不清空，局部刷新会拿悬垂指针去比对。这种 bug 平时不发作，切歌切得快的时候就崩。">
+  <div class="eyebrow">Display · 渲染</div>
+  <h2>320×240 的屏，为什么不能整屏重绘</h2>
+  <p class="sub">一帧 150KB，全量刷新会让 SPI 总线和帧率同时崩溃</p>
+  <div class="slide-body top">
+    <div class="grid3">
+      <div class="stat"><div class="label">分辨率</div><div class="value" style="font-size:29px">320×240</div><div class="note">ST7789 · SPI</div></div>
+      <div class="stat"><div class="label">整屏一帧数据量</div><div class="value" style="color:var(--crit)">150<span class="unit">KB</span></div><div class="note">RGB565，16 位色</div></div>
+      <div class="stat"><div class="label">最大模块</div><div class="value" style="color:var(--s1)">4,523<span class="unit">行</span></div><div class="note">Display.cpp，占固件 43%</div></div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>分层刷新：每个元素按自己的节奏重画</h3>
+      <table style="margin-top:6px">
+        <tr><th style="width:150px">元素</th><th style="width:130px">变化频率</th><th>重绘策略</th></tr>
+        <tr><td class="k">封面 / 标题 / 歌手</td><td>切歌时</td><td>由 <code>_musicChromeDirty</code> 触发全量重画</td></tr>
+        <tr><td class="k">歌词行</td><td>每几秒</td><td>行指针缓存比对，同一行直接 <code>continue</code> 跳过</td></tr>
+        <tr><td class="k">进度条 / 时间</td><td>每秒</td><td>比对 <code>_lastProgressSec</code>，只填一条细矩形</td></tr>
+        <tr><td class="k">频谱柱</td><td>每帧</td><td>逐柱比对高度，只补差值区域</td></tr>
+        <tr><td class="k">天气图标动画</td><td>每 400ms</td><td>推进一个相位，只重绘图标小区域</td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:16px;border-color:var(--warn)">
+      <h3 style="color:var(--warn)">⚠ 局部刷新的隐蔽陷阱：悬垂指针</h3>
+      <div class="grid2" style="gap:16px;margin-top:6px">
+        <div>
+          <pre style="background:var(--surface-3);font-size:12.5px"><span class="c">// 行缓存必须一并作废，否则局部刷新会比对到悬垂指针。</span>
+<span class="k">for</span> (<span class="k">uint8_t</span> i = <span class="n">0</span>; i &lt; <span class="n">5</span>; i++)
+    _lyricRowCache[i] = <span class="k">nullptr</span>;</pre>
+          <div class="src">src/Display.cpp:2898-2899</div>
+        </div>
+        <p style="font-size:13.5px">歌词行缓存存的是<b style="color:var(--text-primary)">字符串指针</b>，靠指针相等判断「这行没变」。切歌时歌词数组重新分配，<b style="color:var(--crit)">旧指针指向已释放内存</b> —— 不清空就会拿悬垂指针做比对。平时不发作，<b style="color:var(--text-primary)">连续快速切歌时崩溃</b>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 21 后端双线程 ============ -->
+<section class="slide" data-notes="【口播】现在讲后端。后端的职责其实很单纯：它是一个双向的管道。<br>
+一边是设备的 WebSocket，一边是 StepFun 的 WebSocket。开两个线程，一个负责设备到上游，一个负责上游到设备，中间做协议翻译。<br>
+<em>为什么要两个线程而不是一个循环？</em>因为两个方向是完全独立的 —— 用户正在说话的同时，上一轮的回复音频可能还在往下发。单线程轮询会互相阻塞。<br>
+这里有几个工程细节值得说。第一，两个线程共用一个 stop 事件，任何一边挂了，另一边立刻停 —— 避免半死不活的连接。第二，往设备发数据有专门的锁，因为 WebSocket 的 send 不是线程安全的，两个线程同时写会把帧撕碎。<br>
+第三点我特别想强调：<em>正常断开和异常断开要分开处理。</em>设备关机、用户退出对话，WebSocket 关闭码是 1000 或 1001，这是正常的生命周期事件，不该记成错误日志。如果不区分，你的日志里会全是「异常」，真正的问题反而被淹没了。">
+  <div class="eyebrow">Backend · 架构</div>
+  <h2>后端就是一根双向管道</h2>
+  <p class="sub">两个 WebSocket，两个线程，中间做协议翻译</p>
+  <div class="slide-body">
+    <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:18px">
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s2)"></span>为什么必须双线程</h3>
+        <p style="margin-bottom:11px">两个方向<b style="color:var(--text-primary)">完全独立</b>：用户正在说话的同时，上一轮回复音频可能还在下发。单线程轮询会互相阻塞。</p>
+        <div style="display:grid;gap:7px;font-size:13px">
+          <div style="background:var(--surface-3);border-radius:7px;padding:9px 11px">
+            <b style="color:var(--s1)">_device_to_upstream</b><br>
+            <span style="color:var(--text-muted);font-size:12px">收设备音频帧 → base64 → 上游</span></div>
+          <div style="background:var(--surface-3);border-radius:7px;padding:9px 11px">
+            <b style="color:var(--s2)">_upstream_to_device</b><br>
+            <span style="color:var(--text-muted);font-size:12px">收上游事件 → 翻译 → 设备</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>三个并发细节</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:150px">共用 stop 事件</td>
+              <td>任何一边退出立刻 <code>_stop.set()</code>，另一边同步收敛 —— 不留半死连接</td></tr>
+          <tr><td class="k">发送加锁</td>
+              <td><code>_device_send_lock</code> 保护 —— WebSocket <code>send</code> 非线程安全，并发写会<b style="color:var(--text-primary)">撕碎帧</b></td></tr>
+          <tr><td class="k">线程回收超时</td>
+              <td><code>join(timeout=2.0)</code>，超时未退出直接抛错，不允许线程泄漏</td></tr>
+        </table>
+        <div style="background:var(--surface-3);border-radius:9px;padding:12px 14px;margin-top:12px">
+          <b style="color:var(--warn);font-size:13px">⚠ 正常断开 ≠ 异常断开</b>
+          <pre style="background:var(--surface-2);margin-top:7px;font-size:12.5px"><span class="c"># Flask-Sock 1000/1001 close is a normal device lifecycle event.</span>
+<span class="k">return</span> name == <span class="s">"ConnectionClosed"</span> <span class="k">and</span> code <span class="k">in</span> (<span class="n">1000</span>, <span class="n">1001</span>)</pre>
+          <p style="margin-top:8px;font-size:13px">设备关机 / 用户退出属正常生命周期。<b style="color:var(--text-primary)">不区分 → 日志全是「异常」，真问题被淹没。</b></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 22 记忆隔离 ============ -->
+<section class="slide" data-notes="【口播】既然要做「情感陪伴」，就得让它记得住事。<br>
+记忆按 device_id 隔离，每台设备一个 JSON 文件。这样客厅那台和卧室那台记得的是不同的事，不会串味。<br>
+记忆分两层：profile 是长期记忆，存用户偏好、称呼这些稳定事实；history 是短期对话历史，保留最近 12 轮，超了就裁掉最老的。每次建立会话时，把人设 + 长期记忆 + 最近 6 轮对话拼成 instructions 发给大模型。<br>
+<em>只注入最近 6 轮而不是全部 12 轮，是为了控制 prompt 长度</em>——太长了既费 token 又会稀释人设。<br>
+两个安全细节请注意。第一，device_id 直接用来拼文件路径，<em>必须做过滤</em>，否则设备传一个带 ../ 的 id 就能读写任意文件，这是典型的路径穿越漏洞。代码里用正则把非法字符全替换掉，还限制了长度。<br>
+第二，写盘用的是先写临时文件再 os.replace 原子替换。如果直接覆写，写到一半断电，记忆文件就损坏了。而且写盘失败不阻断对话 —— 记不住事总比聊不了天强。">
+  <div class="eyebrow">Backend · 记忆</div>
+  <h2>让它记得住：按设备隔离的双层记忆</h2>
+  <p class="sub">客厅那台和卧室那台，记得的是不同的事</p>
+  <div class="slide-body top">
+    <div class="grid2">
+      <div class="card" style="border-color:var(--s2)">
+        <h3><span class="dot" style="background:var(--s2)"></span>双层结构</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:96px"><code>profile</code></td>
+              <td><b style="color:var(--text-primary)">长期记忆</b> —— 称呼、偏好等稳定事实<br>
+              <span style="color:var(--text-muted);font-size:12px">{"称呼":"小敏","喜欢的音乐":"周杰伦"}</span></td></tr>
+          <tr><td class="k"><code>history</code></td>
+              <td><b style="color:var(--text-primary)">短期历史</b> —— 保留最近 12 轮，超出裁剪最老的</td></tr>
+          <tr><td class="k"><code>turns</code></td>
+              <td>累计轮数，用于触发长期记忆提炼</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">建会话时拼装 <code>instructions</code>：<br>
+        人设 + 长期记忆 + <b style="color:var(--text-primary)">最近 6 轮</b>对话。<br>
+        <span style="color:var(--text-muted);font-size:12.5px">只注入 6 轮而非全部 12 轮 —— 控制 prompt 长度，过长既费 token 又稀释人设。</span></p>
+      </div>
+      <div class="card" style="border-color:var(--crit)">
+        <h3 style="color:var(--crit)">🔒 两个安全细节</h3>
+        <p style="margin-bottom:8px"><b style="color:var(--text-primary)">① device_id 会拼进文件路径 —— 必须过滤</b></p>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="k">def</span> _safe_device_id(device_id: <span class="k">str</span>) -&gt; <span class="k">str</span>:
+    <span class="s">"""device_id 只允许安全字符，防路径穿越。"""</span>
+    cleaned = re.sub(<span class="hl s">r"[^A-Za-z0-9_-]"</span>, <span class="s">"_"</span>, device_id <span class="k">or</span> <span class="s">"unknown"</span>)
+    <span class="k">return</span> cleaned[:<span class="n">64</span>] <span class="k">or</span> <span class="s">"unknown"</span></pre>
+        <p style="margin-top:7px;font-size:13px">不过滤 → 设备传一个含 <code>../</code> 的 id 即可<b style="color:var(--crit)">读写任意文件</b>。</p>
+        <p style="margin:12px 0 8px"><b style="color:var(--text-primary)">② 原子写盘，且失败不阻断对话</b></p>
+        <pre style="background:var(--surface-3);font-size:12.5px">json.dump(data, <span class="k">open</span>(tmp, <span class="s">"w"</span>), ...)
+os.<span class="hl">replace</span>(tmp, path)     <span class="c"># 原子替换</span>
+<span class="k">except</span> OSError:
+    <span class="k">pass</span>   <span class="c"># 记忆写盘失败不阻断对话</span></pre>
+        <p style="margin-top:7px;font-size:13px">直接覆写 → 写到一半断电 = <b style="color:var(--text-primary)">记忆文件损坏</b>。<br>记不住事，也好过聊不了天。</p>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;background:var(--surface-3)">
+      <p style="font-size:13.5px"><b style="color:var(--s3)">人设可整体替换：</b>默认是「温柔、有耐心的情感陪伴伙伴，不要说自己只是 AI 或助手」，通过 <code>VIRTUAL_COMPANION_PROMPT</code> 环境变量可换成猫娘、管家、树洞等任意风格，对所有设备生效。</p>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 23 协议健壮性 ============ -->
+<section class="slide" data-notes="【口播】这页讲一个很多人会忽略的问题：<em>你的服务器要假设设备发来的东西可能是垃圾。</em><br>
+设备是嵌入式的，内存踩坏了、缓冲区错位了、固件版本不匹配了，都可能发出畸形数据。服务器不能因为一个坏帧就崩溃。<br>
+所以上行的每一帧都做校验：空帧拒绝、超过 4096 字节拒绝、奇数字节拒绝 —— 因为 PCM16 一个采样是 2 字节，奇数长度说明帧边界错位了，继续处理只会产生噪音。<br>
+关键在于<em>拒绝的方式</em>：不是断开连接，而是回一个 protocol_error 事件说明原因，然后 continue 继续处理下一帧。断开连接对用户来说就是「突然不能用了」，而跳过一个坏帧用户根本感觉不到。<br>
+上游的数据同样不可信。base64 解码失败、JSON 解析失败、事件不是对象 —— 每一种都有对应的错误码。<br>
+这些校验加起来可能就三十行代码，但它决定了这个系统是「demo 能跑」还是「能一直开着」。">
+  <div class="eyebrow">Backend · 健壮性</div>
+  <h2>假设设备发来的都是垃圾</h2>
+  <p class="sub">嵌入式设备会发畸形数据 —— 服务器不能因为一个坏帧就倒下</p>
+  <div class="slide-body">
+    <div class="card" style="margin-bottom:16px">
+      <h3>上行音频帧的三重校验</h3>
+      <table style="margin-top:6px">
+        <tr><th style="width:190px">校验</th><th style="width:210px">错误码</th><th>为什么这样定</th></tr>
+        <tr><td class="k">非空</td><td><code>empty_audio_frame</code></td><td>空帧无意义，往上游发只会污染 VAD 判断</td></tr>
+        <tr><td class="k">≤ 4096 字节</td><td><code>audio_frame_too_large</code></td><td>设备正常帧是 640B。超大帧说明<b style="color:var(--text-primary)">设备侧缓冲已经错乱</b></td></tr>
+        <tr><td class="k">偶数字节</td><td><code>unaligned_audio_frame</code></td><td>PCM16 一个采样 = 2 字节。奇数长度 = <b style="color:var(--text-primary)">帧边界错位</b>，继续处理只会产生噪音</td></tr>
+      </table>
+    </div>
+    <div class="grid2">
+      <div class="card" style="border-color:var(--good)">
+        <h3 style="color:var(--good)">✓ 关键：拒绝，但不断开</h3>
+        <pre style="background:var(--surface-3);font-size:12.5px"><span class="k">if</span> <span class="k">len</span>(frame) % <span class="n">2</span>:
+    self._send_device_json({
+        <span class="s">"type"</span>: <span class="s">"protocol_error"</span>,
+        <span class="s">"code"</span>: <span class="s">"unaligned_audio_frame"</span>,
+        <span class="s">"message"</span>: <span class="s">"PCM16 音频帧必须是偶数字节"</span>,
+    })
+    <span class="hl k">continue</span>      <span class="c"># 跳过这一帧，会话继续</span></pre>
+        <p style="margin-top:11px;font-size:13.5px">断开连接 = 用户感受到「突然不能用了」。<br>跳过一个坏帧 = <b style="color:var(--text-primary)">用户完全无感</b>。</p>
+      </div>
+      <div class="card">
+        <h3><span class="dot" style="background:var(--s2)"></span>上游数据同样不可信</h3>
+        <table style="margin-top:4px;font-size:13px">
+          <tr><td class="k" style="width:186px"><code>invalid_audio_base64</code></td><td>上游音频不是有效 Base64</td></tr>
+          <tr><td class="k"><code>invalid_upstream_json</code></td><td>上游文本帧不是 JSON</td></tr>
+          <tr><td class="k"><code>invalid_upstream_event</code></td><td>事件不是 JSON 对象</td></tr>
+          <tr><td class="k"><code>unsupported_event</code></td><td>设备发来未知事件类型</td></tr>
+        </table>
+        <p style="margin-top:11px;font-size:13.5px">三十行校验代码，决定这个系统是<b style="color:var(--text-primary)">「demo 能跑」</b>还是<b style="color:var(--good)">「能一直开着」</b>。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 24 踩坑总表 ============ -->
+<section class="slide" data-notes="【口播】把这期视频讲到的坑汇总一下，这页可以暂停截图。<br>
+我把它们分成三类。<br>
+第一类是<em>硬件层面的物理约束</em>：引脚不能乱选，走线不能太长。这类问题的特点是「代码完全正确但就是不工作」，最难查，因为你的调试工具都在软件层。<br>
+第二类是<em>资源竞争</em>：麦克风端口、内部内存、Flash 缓存。这类问题的特点是「单独测都好的，一起跑就崩」，而且经常是概率性的。<br>
+第三类是<em>时序与体验</em>：提示音什么时候响、指令什么时候执行。这类问题的特点是「功能都实现了但用起来很别扭」，只有真机试用才能发现，看代码是看不出来的。<br>
+<em>我个人认为第三类最容易被低估。</em>前两类不解决产品跑不起来，你被迫会去解决；第三类不解决产品也能跑，只是难用 —— 而这恰恰是「能用的东西」和「好用的东西」之间的全部差距。">
+  <div class="eyebrow">Summary · 复盘</div>
+  <h2>本期涉及的坑，一页汇总</h2>
+  <p class="sub">按「为什么难查」分类 —— 建议暂停截图</p>
+  <div class="slide-body top">
+    <table style="font-size:13px">
+      <tr><th style="width:132px">类别</th><th style="width:230px">现象</th><th>根因</th><th style="width:190px">解法</th></tr>
+
+      <tr><td rowspan="3" class="k" style="border-bottom:1px solid var(--rule);vertical-align:top;color:var(--s4)">物理约束<br><span style="font-weight:400;font-size:11.5px;color:var(--text-muted)">代码正确但不工作</span></td>
+          <td>随机启动失败</td><td>外设占用 strapping 脚，上电电平干扰启动模式选择</td><td>避开 0/3/45/46</td></tr>
+      <tr><td>音频有底噪</td><td>1.4MHz BCLK 长跨线耦合 WiFi/SPI 噪声</td><td>选连续脚位，走线 &lt;15cm</td></tr>
+      <tr><td>麦克风读出全零</td><td>INMP441 是 24bit 装在 32bit 槽，按 16bit 读落在无效低位</td><td>按 32bit 读后右移 11 位</td></tr>
+
+      <tr><td rowspan="4" class="k" style="border-bottom:1px solid var(--rule);vertical-align:top;color:var(--crit)">资源竞争<br><span style="font-weight:400;font-size:11.5px;color:var(--text-muted)">单测都好，一起就崩</span></td>
+          <td>唤醒后收不到语音</td><td>两模块抢同一个 I2S 端口，驱动只能装一次</td><td>严格交接：先卸载再安装</td></tr>
+      <tr><td>mbedTLS 分配失败</td><td>多路 HTTPS 争抢<b style="color:var(--text-primary)">连续</b>内部堆，碎片化</td><td>天气为语音让路 + 启动错峰</td></tr>
+      <tr><td><b style="color:var(--warn)">歌词滚动时爆音</b></td><td>读 SPIFFS 暂停 flash 缓存 → 解码代码停摆 → I2S 欠载</td><td>字库全量驻留 PSRAM</td></tr>
+      <tr><td>快速切歌时崩溃</td><td>局部刷新的行缓存比对到已释放的悬垂指针</td><td>切歌时一并作废缓存</td></tr>
+
+      <tr><td rowspan="4" class="k" style="vertical-align:top;color:var(--s3)">时序体验<br><span style="font-weight:400;font-size:11.5px;color:var(--text-muted)">能跑，但难用</span></td>
+          <td>说话前几个字被吞</td><td>「叮」响时 WebSocket 还在握手，麦克风未开</td><td>提示音移到 session.ready</td></tr>
+      <tr><td>首轮音色/VAD 不对</td><td>把 session.created 当成就绪</td><td>只认 session.updated</td></tr>
+      <tr><td>确认语音被自己打断</td><td>收到 command 立刻执行，新歌盖掉 TTS</td><td>暂存指令，播完排空再执行</td></tr>
+      <tr><td>界面卡顿 300ms</td><td>音量渐变在 UI 线程阻塞等待</td><td>非阻塞渐变，音频任务推进</td></tr>
+    </table>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 25 方法论 ============ -->
+<section class="slide" data-notes="【口播】最后聊点方法论，这是我做完这个项目最大的三个收获。<br>
+第一，<em>把注释写成「为什么」，不要写「是什么」。</em>你们看我这期视频引用的所有代码注释，没有一句是「这里设置采样率」这种废话，全都是「为什么必须是这个值」「不这样会出什么事」。三天前的我写的注释，今天的我完全能看懂当时在担心什么。代码本身说明「做了什么」，只有注释能说明「为什么这么做」。<br>
+第二，<em>把不变量写进文档，而不是靠记忆。</em>比如「任何模块在前一个持有者确认释放之前，都不能安装麦克风驱动」这条铁律，我写在设计文档里，还写成了后端的测试用例。这样即使过半年回来改，或者别人接手，这条约束不会被无意破坏。<br>
+第三，<em>可观测性要提前埋。</em>内存的最大连续块、任务栈高水位线、麦克风的 RMS 和削顶计数 —— 这些日志不是出问题之后才加的，是一开始就常驻的。嵌入式没有断点调试的奢侈，串口日志就是你的全部视野。<em>而且要打「最大连续块」而不只是「剩余总量」，碎片化的时候这两个数会严重背离。</em>">
+  <div class="eyebrow">Takeaway · 方法论</div>
+  <h2>三条我认为最值钱的经验</h2>
+  <p class="sub">比任何具体技术点都更通用</p>
+  <div class="slide-body">
+    <div class="grid3">
+      <div class="card" style="border-color:var(--s1)">
+        <h3><span style="color:var(--s1);font-family:var(--mono);font-size:20px">01</span> 注释写「为什么」</h3>
+        <p style="margin-bottom:11px">代码本身已经说明「做了什么」。<b style="color:var(--text-primary)">只有注释能说明「为什么这么做」「不这样会出什么事」。</b></p>
+        <div style="background:var(--surface-3);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.7">
+          <span style="color:var(--crit)">✗</span> <span style="color:var(--text-muted)">「设置采样率为 16000」</span><br>
+          <span style="color:var(--good)">✓</span> <span style="color:var(--text-secondary)">「按 16-bit 读取会落在无效低位，表现为持续全零」</span>
+        </div>
+        <p style="margin-top:11px;font-size:13px">本期引用的每一条注释都属于后者 —— <b style="color:var(--text-primary)">它们是这期视频的全部素材来源</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--s3)">
+        <h3><span style="color:var(--s3);font-family:var(--mono);font-size:20px">02</span> 不变量要落纸落测试</h3>
+        <p style="margin-bottom:11px">跨模块的约束<b style="color:var(--text-primary)">不能只存在于脑子里</b> —— 半年后回来改，或者别人接手，它一定会被无意破坏。</p>
+        <div style="background:var(--surface-3);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.7;color:var(--text-secondary)">
+          「任何模块在前一个持有者确认释放之前，都不得安装麦克风驱动」<br>
+          <span style="color:var(--text-muted)">→ 写进设计文档</span><br>
+          <span style="color:var(--text-muted)">→ 写成后端契约测试</span>
+        </div>
+        <p style="margin-top:11px;font-size:13px">测试锁住的不是代码行为，<b style="color:var(--text-primary)">是当初那个决策的理由</b>。</p>
+      </div>
+      <div class="card" style="border-color:var(--s4)">
+        <h3><span style="color:var(--s4);font-family:var(--mono);font-size:20px">03</span> 可观测性提前埋</h3>
+        <p style="margin-bottom:11px">嵌入式<b style="color:var(--text-primary)">没有断点调试的奢侈</b>，串口日志就是你的全部视野。出问题再加日志，往往已经复现不了。</p>
+        <div style="background:var(--surface-3);border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.75;color:var(--text-secondary)">
+          · 内存<b style="color:var(--text-primary)">最大连续块</b>（不只是剩余量）<br>
+          · 任务栈高水位线<br>
+          · 麦克风 RMS / peak / 削顶计数
+        </div>
+        <p style="margin-top:11px;font-size:13px"><b style="color:var(--warn)">碎片化时，「剩余总量」和「最大连续块」会严重背离</b> —— 只看总量会误判。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+<!-- ============ 26 结尾 ============ -->
+<section class="slide" data-notes="【口播】收尾。<br>
+回顾一下这个项目：三天，18 个提交，从一个只能放音乐的盒子，变成一个能听懂人话的 AI 音箱。<br>
+后面还有几件想做的事：唤醒词想换成自定义的，esp-sr 支持自己训练；点播指定歌曲还没做，需要给 MusicService 加搜索接口；还有电池供电和 OTA 升级，引脚我已经预留了。<br>
+<em>如果这期视频对你有帮助，麻烦一键三连。</em>评论区告诉我你最想让我展开讲哪一部分 —— 是 esp-sr 的模型训练，是实时音频协议的设计，还是那个 4500 行的 UI 模块，我可以单独做一期。<br>
+下期见。">
+  <div class="slide-body">
+    <div class="eyebrow">The End</div>
+    <h1 style="font-size:48px;max-width:900px">从「能跑」到「好用」<br>
+      <span style="color:var(--s1)">差的全是这些细节</span></h1>
+    <div class="grid4" style="margin-top:32px;max-width:940px">
+      <div class="stat"><div class="label">提交</div><div class="value" style="color:var(--s1)">18</div></div>
+      <div class="stat"><div class="label">固件</div><div class="value" style="color:var(--s3)">10.6<span class="unit">K 行</span></div></div>
+      <div class="stat"><div class="label">踩坑记录</div><div class="value" style="color:var(--s2)">11</div></div>
+      <div class="stat"><div class="label">耗时</div><div class="value" style="color:var(--s4)">3<span class="unit">天</span></div></div>
+    </div>
+    <div class="card" style="margin-top:30px;max-width:940px;background:var(--surface-3)">
+      <h3>还没做完的部分</h3>
+      <table style="margin-top:4px;font-size:13.5px">
+        <tr><td class="k" style="width:190px">自定义唤醒词</td><td>esp-sr 支持自训练模型，替换「你好小智」</td></tr>
+        <tr><td class="k">点播指定歌曲</td><td>需要给 MusicService 补搜索接口，当前诚实上报「不支持」</td></tr>
+        <tr><td class="k">电池 + OTA</td><td>ADC1 的 GPIO 1/9/10 已预留，分区表已含双 app 分区</td></tr>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:26px;font-size:17px">
+      评论区告诉我想看哪部分的深入拆解 —— <span style="color:var(--s1)">模型训练</span> · <span style="color:var(--s3)">音频协议</span> · <span style="color:var(--s4)">4500 行 UI 模块</span>
+    </p>
+  </div>
+  <div class="foot"><span class="tag">ESP32-BOX / 技术分析</span><span class="pageno"></span></div>
+</section>
+
+</div>
+
+<div id="notes"></div>
+<div id="jump"><input id="jumpi" inputmode="numeric" placeholder="页码"></div>
+
+<script>
+const stage=document.getElementById('stage');
+const slides=[...document.querySelectorAll('.slide')];
+const notes=document.getElementById('notes');
+const bar=document.getElementById('bar');
+const jump=document.getElementById('jump'), jumpi=document.getElementById('jumpi');
+let cur=0, showNotes=false;
+
+function fit(){
+  const s=Math.min(innerWidth/1280, innerHeight/720);
+  stage.style.transform=`translate(-50%,-50%) scale(${s})`;
+}
+addEventListener('resize',fit); fit();
+
+function render(){
+  slides.forEach((s,i)=>s.classList.toggle('on',i===cur));
+  const n=slides[cur].querySelector('.pageno');
+  if(n) n.textContent=String(cur+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
+  bar.style.width=((cur+1)/slides.length*100)+'%';
+  notes.innerHTML='<b>演讲者备注</b>'+(slides[cur].dataset.notes||'（本页无备注）');
+  notes.scrollTop=0;
+  location.hash=cur+1;
+}
+function go(i){ cur=Math.max(0,Math.min(slides.length-1,i)); render(); }
+
+addEventListener('keydown',e=>{
+  if(jump.classList.contains('on')){
+    if(e.key==='Enter'){ go(parseInt(jumpi.value,10)-1||0); jump.classList.remove('on'); }
+    if(e.key==='Escape') jump.classList.remove('on');
+    return;
+  }
+  switch(e.key){
+    case 'ArrowRight': case ' ': case 'PageDown': case 'j': e.preventDefault(); go(cur+1); break;
+    case 'ArrowLeft': case 'PageUp': case 'k': e.preventDefault(); go(cur-1); break;
+    case 'Home': go(0); break;
+    case 'End': go(slides.length-1); break;
+    case 'n': case 'N': showNotes=!showNotes; notes.classList.toggle('on',showNotes); break;
+    case 'f': case 'F': document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen(); break;
+    case 'g': case 'G': jump.classList.add('on'); jumpi.value=''; jumpi.focus(); break;
+  }
+});
+addEventListener('click',e=>{ if(e.target.closest('#notes,#jump')) return;
+  go(cur + (e.clientX < innerWidth*0.28 ? -1 : 1)); });
+
+go(parseInt(location.hash.slice(1),10)-1 || 0);
+</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-BOX 演示风格对比 · 5 套硬件科技风</title>
+<style>
+/* ============================================================
+   风格对比预览
+   ── 操作 ──
+   1~5      切换风格
+   ← →      切换示例页（封面 / 原理页 / 数据页）
+   F        全屏
+   ============================================================ */
+
+/* ---------- 主题令牌 ---------- */
+#stage[data-theme="scope"]{
+  --bg:#070b09; --surface:#0d1512; --surface2:#132019; --rule:#1e3a2c;
+  --text:#d9f5e4; --text2:#8fc7a8; --muted:#5a8a70;
+  --a1:#5dfca0; --a2:#ffc247; --a3:#4de5ff; --a4:#ff6b6b;
+  --radius:4px; --glow:0 0 12px rgba(93,252,160,.45);
+}
+#stage[data-theme="pcb"]{
+  --bg:#0a1410; --surface:#102019; --surface2:#152a20; --rule:#1e4231;
+  --text:#eef2ea; --text2:#a9c2ad; --muted:#6d8a75;
+  --a1:#d9a520; --a2:#c87137; --a3:#5ec98a; --a4:#e0554f;
+  --radius:3px; --glow:none;
+}
+#stage[data-theme="blueprint"]{
+  --bg:#0b1826; --surface:#102436; --surface2:#152d43; --rule:#24507a;
+  --text:#e4effb; --text2:#a9c6e2; --muted:#6d8fae;
+  --a1:#5aa9f0; --a2:#7fd4ff; --a3:#ffd166; --a4:#ff7b72;
+  --radius:2px; --glow:none;
+}
+#stage[data-theme="terminal"]{
+  --bg:#0a0a0b; --surface:#121214; --surface2:#1a1a1c; --rule:#2e2e31;
+  --text:#f2efe6; --text2:#bab4a5; --muted:#79746b;
+  --a1:#ffb000; --a2:#5ee06a; --a3:#63c8ff; --a4:#ff5f56;
+  --radius:0px; --glow:0 0 10px rgba(255,176,0,.3);
+}
+#stage[data-theme="neon"]{
+  --bg:#08070f; --surface:#131024; --surface2:#1a1636; --rule:#2f2957;
+  --text:#f3f1ff; --text2:#b9b4d8; --muted:#7c76a0;
+  --a1:#00e5ff; --a2:#ff3fa4; --a3:#a97bff; --a4:#ffd23f;
+  --radius:14px; --glow:0 0 16px rgba(0,229,255,.4);
+}
+
+:root{
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:var(--sans)}
+
+#stage{position:absolute;top:50%;left:50%;width:1280px;height:720px;
+       transform-origin:center center;background:var(--bg);color:var(--text);overflow:hidden}
+.slide{position:absolute;inset:0;padding:54px 64px 62px;display:none;flex-direction:column}
+.slide.on{display:flex}
+.body{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}
+.body.top{justify-content:flex-start}
+
+/* ---------- 通用排版 ---------- */
+.eyebrow{font-size:12.5px;letter-spacing:.16em;color:var(--a1);font-weight:700;
+         text-transform:uppercase;margin-bottom:11px;display:flex;align-items:center;gap:9px;
+         font-family:var(--mono)}
+.eyebrow::before{content:"";width:20px;height:2px;background:var(--a1)}
+h1{font-size:50px;line-height:1.16;margin:0 0 10px;font-weight:700;letter-spacing:-.01em}
+h2{font-size:34px;line-height:1.24;margin:0 0 8px;font-weight:700;letter-spacing:-.01em}
+.sub{font-size:16px;color:var(--text2);line-height:1.65;margin:0 0 22px;max-width:1000px}
+
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius);
+      padding:19px 21px;position:relative}
+.card h3{margin:0 0 10px;font-size:16.5px;font-weight:700;display:flex;align-items:center;gap:9px}
+.card p{margin:0;font-size:13.8px;line-height:1.72;color:var(--text2)}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:17px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+
+.stat{background:var(--surface);border:1px solid var(--rule);border-radius:var(--radius);padding:17px 19px;position:relative}
+.stat .label{font-size:12px;color:var(--muted);margin-bottom:7px;font-family:var(--mono);letter-spacing:.05em}
+.stat .value{font-size:35px;font-weight:700;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.stat .unit{font-size:14px;color:var(--text2);font-weight:600;margin-left:3px}
+
+table{width:100%;border-collapse:collapse;font-size:13.2px}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;font-family:var(--mono);
+   letter-spacing:.06em;text-transform:uppercase;padding:0 11px 8px;border-bottom:1px solid var(--rule)}
+td{padding:8.5px 11px;border-bottom:1px solid var(--rule);color:var(--text2);line-height:1.5}
+tr:last-child td{border-bottom:none}
+td.k{color:var(--text);font-weight:600}
+code{font-family:var(--mono);font-size:12.3px;color:var(--text);
+     background:var(--surface2);padding:1.5px 6px;border-radius:3px}
+
+pre{margin:0;background:var(--surface2);border:1px solid var(--rule);border-radius:var(--radius);
+    padding:15px 17px;font-family:var(--mono);font-size:12.6px;line-height:1.75;
+    color:var(--text2);overflow:hidden}
+pre .c{color:var(--muted)} pre .k{color:var(--a1);font-weight:600}
+pre .s{color:var(--a3)}    pre .n{color:var(--a2)}
+pre .hl{color:var(--text);font-weight:600}
+
+.formula{background:var(--surface2);border-radius:var(--radius);padding:12px 14px;
+         font-family:var(--mono);font-size:12.8px;line-height:1.85;color:var(--text2)}
+
+.foot{position:absolute;left:64px;right:64px;bottom:20px;display:flex;
+      justify-content:space-between;align-items:center;font-size:11.5px;color:var(--muted);
+      font-family:var(--mono);letter-spacing:.05em}
+
+/* ============================================================
+   风格 1 · 示波器 SCOPE —— 荧光余晖 + 网格 + 扫描线
+   ============================================================ */
+#stage[data-theme="scope"]::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(93,252,160,.055) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(93,252,160,.055) 1px,transparent 1px);
+  background-size:40px 40px}
+#stage[data-theme="scope"]::after{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:40;
+  background:repeating-linear-gradient(rgba(0,0,0,0) 0 2px,rgba(0,0,0,.22) 2px 4px)}
+#stage[data-theme="scope"] .slide{z-index:1}
+#stage[data-theme="scope"] h1,
+#stage[data-theme="scope"] h2{text-shadow:var(--glow)}
+#stage[data-theme="scope"] .eyebrow{text-shadow:var(--glow)}
+#stage[data-theme="scope"] .stat .value{text-shadow:0 0 14px currentColor}
+#stage[data-theme="scope"] .card,
+#stage[data-theme="scope"] .stat{background:rgba(13,21,18,.86)}
+/* 四角刻度标记 */
+#stage[data-theme="scope"] .card::before{
+  content:"";position:absolute;left:-1px;top:-1px;width:11px;height:11px;
+  border-left:2px solid var(--a1);border-top:2px solid var(--a1);opacity:.75}
+#stage[data-theme="scope"] .card::after{
+  content:"";position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;
+  border-right:2px solid var(--a1);border-bottom:2px solid var(--a1);opacity:.75}
+
+/* ============================================================
+   风格 2 · 电路板 PCB —— 阻焊绿 + 镀金走线 + 丝印
+   ============================================================ */
+#stage[data-theme="pcb"]::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(90deg,transparent 0 63px,rgba(217,165,32,.10) 63px 65px,transparent 65px),
+    linear-gradient(rgba(217,165,32,.055) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(217,165,32,.055) 1px,transparent 1px);
+  background-size:100% 100%,26px 26px,26px 26px}
+#stage[data-theme="pcb"] .slide{z-index:1}
+#stage[data-theme="pcb"] .card,
+#stage[data-theme="pcb"] .stat{background:rgba(16,32,25,.94);
+  box-shadow:inset 0 0 0 1px rgba(217,165,32,.14)}
+/* 丝印位号：U1 / U2 ... 由 data-ref 注入 */
+#stage[data-theme="pcb"] .card[data-ref]::before,
+#stage[data-theme="pcb"] .stat[data-ref]::before{
+  content:attr(data-ref);position:absolute;right:9px;top:6px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.12em;
+  color:var(--a1);opacity:.62}
+/* 焊盘过孔：卡片左上角一个镀金环 */
+#stage[data-theme="pcb"] .card::after{
+  content:"";position:absolute;left:-4px;top:16px;width:8px;height:8px;border-radius:50%;
+  background:var(--bg);box-shadow:0 0 0 2.5px var(--a1)}
+#stage[data-theme="pcb"] .eyebrow{color:var(--a1)}
+#stage[data-theme="pcb"] .eyebrow::before{background:var(--a1)}
+
+/* ============================================================
+   风格 3 · 蓝图 BLUEPRINT —— 工程制图 / 数据手册
+   ============================================================ */
+#stage[data-theme="blueprint"]::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(90,169,240,.07) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,169,240,.07) 1px,transparent 1px),
+    linear-gradient(rgba(90,169,240,.04) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(90,169,240,.04) 1px,transparent 1px);
+  background-size:100px 100px,100px 100px,20px 20px,20px 20px}
+/* 制图边框 + 四角定位标 */
+#stage[data-theme="blueprint"]::after{
+  content:"";position:absolute;inset:26px;pointer-events:none;z-index:2;
+  border:1px solid rgba(90,169,240,.30)}
+#stage[data-theme="blueprint"] .slide{z-index:1;padding:56px 70px 64px}
+#stage[data-theme="blueprint"] .card,
+#stage[data-theme="blueprint"] .stat{background:rgba(16,36,54,.90)}
+#stage[data-theme="blueprint"] h1,
+#stage[data-theme="blueprint"] h2{font-weight:600}
+/* 尺寸标注线：卡片顶部一条带端点的细线 */
+#stage[data-theme="blueprint"] .card[data-ref]::before{
+  content:attr(data-ref);position:absolute;left:0;top:-17px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;color:var(--a1);opacity:.8}
+#stage[data-theme="blueprint"] .card[data-ref]::after{
+  content:"";position:absolute;right:0;top:-10px;width:34%;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(90,169,240,.5))}
+
+/* ============================================================
+   风格 4 · 终端 TERMINAL —— 琥珀 CRT / 直角 / 括号框
+   ============================================================ */
+#stage[data-theme="terminal"]::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:40;
+  background:repeating-linear-gradient(rgba(0,0,0,0) 0 3px,rgba(0,0,0,.14) 3px 4px)}
+#stage[data-theme="terminal"] .slide{z-index:1}
+#stage[data-theme="terminal"] h1,
+#stage[data-theme="terminal"] h2{font-family:var(--sans);text-shadow:var(--glow)}
+#stage[data-theme="terminal"] .eyebrow::before{display:none}
+#stage[data-theme="terminal"] .eyebrow::after{
+  content:"_";animation:blink 1.1s step-end infinite;font-weight:700}
+@keyframes blink{50%{opacity:0}}
+/* 卡片：左侧竖条 + 位号前缀 */
+#stage[data-theme="terminal"] .card,
+#stage[data-theme="terminal"] .stat{border-left:3px solid var(--a1)}
+#stage[data-theme="terminal"] .card h3::before{
+  content:"> ";color:var(--a1);font-family:var(--mono);font-weight:700}
+#stage[data-theme="terminal"] .card[data-ref]::before{
+  content:"["attr(data-ref)"]";position:absolute;right:10px;top:7px;
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;color:var(--muted)}
+#stage[data-theme="terminal"] .stat .value{font-family:var(--mono)}
+
+/* ============================================================
+   风格 5 · 霓虹 NEON —— 渐变辉光 / 圆角 / 短视频友好
+   ============================================================ */
+#stage[data-theme="neon"]::before{
+  content:"";position:absolute;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(700px 380px at 12% -6%,rgba(0,229,255,.15),transparent 65%),
+    radial-gradient(650px 360px at 92% 106%,rgba(255,63,164,.14),transparent 65%)}
+#stage[data-theme="neon"] .slide{z-index:1}
+#stage[data-theme="neon"] h1,
+#stage[data-theme="neon"] h2{text-shadow:0 0 22px rgba(0,229,255,.28)}
+#stage[data-theme="neon"] .card,
+#stage[data-theme="neon"] .stat{
+  background:linear-gradient(160deg,rgba(26,22,54,.95),rgba(19,16,36,.95));
+  border-color:rgba(0,229,255,.16)}
+/* 顶部渐变高光条 */
+#stage[data-theme="neon"] .card::before{
+  content:"";position:absolute;left:16px;right:16px;top:0;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,var(--a1),var(--a3),var(--a2))}
+#stage[data-theme="neon"] .stat .value{text-shadow:0 0 20px currentColor}
+#stage[data-theme="neon"] .eyebrow::before{
+  background:linear-gradient(90deg,var(--a1),var(--a2));width:26px;height:3px;border-radius:2px}
+
+/* ---------- 风格切换条 ---------- */
+#picker{position:fixed;left:0;right:0;bottom:0;z-index:80;display:flex;gap:0;
+        background:#000;border-top:1px solid #222;font-family:var(--mono);font-size:12px}
+#picker button{flex:1;background:transparent;border:none;border-right:1px solid #1c1c1c;
+        color:#7a7a7a;padding:11px 6px;cursor:pointer;letter-spacing:.06em;
+        display:flex;flex-direction:column;gap:3px;align-items:center}
+#picker button b{font-size:13px;color:#bdbdbd}
+#picker button.on{background:#141414}
+#picker button.on b{color:#fff}
+#picker button .sw{display:flex;gap:3px;margin-top:2px}
+#picker button .sw i{width:13px;height:5px;border-radius:1px}
+#hint{position:fixed;right:12px;top:10px;z-index:80;font-family:var(--mono);
+      font-size:11px;color:#5a5a5a;letter-spacing:.05em}
+</style>
+</head>
+<body>
+
+<div id="hint">1–5 切换风格　←→ 切换示例页　F 全屏</div>
+
+<div id="stage" data-theme="scope">
+
+  <!-- ============ 示例 A · 封面 ============ -->
+  <section class="slide on">
+    <div class="body">
+      <div class="eyebrow">ESP32-S3 音频专题 · 第一期</div>
+      <h1 style="max-width:960px">一块开发板，怎么唱出一首歌<br>
+        <span style="color:var(--a1)">音频 · 显示 · 输入，三条链路的完整原理</span></h1>
+      <p class="sub" style="font-size:18px;max-width:880px;margin-top:16px">
+        ESP32-S3 · MAX98357A D 类功放 · ST7789 SPI 屏 · 模拟摇杆<br>
+        本期只讲原理：每一步的输入是什么、输出是什么、为什么需要这一步
+      </p>
+      <div class="g4" style="margin-top:30px;max-width:900px">
+        <div class="stat" data-ref="U1"><div class="label">采样率</div>
+          <div class="value" style="color:var(--a1)">44.1<span class="unit">kHz</span></div></div>
+        <div class="stat" data-ref="U2"><div class="label">屏幕分辨率</div>
+          <div class="value" style="color:var(--a3)">320<span class="unit">×240</span></div></div>
+        <div class="stat" data-ref="U3"><div class="label">摇杆信号线</div>
+          <div class="value" style="color:var(--a2)">3<span class="unit">根</span></div></div>
+        <div class="stat" data-ref="U4"><div class="label">链路环节</div>
+          <div class="value" style="color:var(--a4)">8<span class="unit">步</span></div></div>
+      </div>
+    </div>
+    <div class="foot"><span>ESP32-BOX / EP.1 原理篇</span><span class="tn"></span></div>
+  </section>
+
+  <!-- ============ 示例 B · 原理页（卡片 + 公式） ============ -->
+  <section class="slide">
+    <div class="eyebrow">Principle · 功放</div>
+    <h2>一串整数，怎么变回空气的振动</h2>
+    <p class="sub">D 类功放的核心思想：不做线性放大，只做开关 —— 然后让喇叭线圈自己滤波</p>
+    <div class="body top">
+      <div class="g2">
+        <div class="card" data-ref="AB-CLASS">
+          <h3 style="color:var(--muted)">传统 AB 类：线性放大</h3>
+          <p style="margin-bottom:11px">DAC 把数字变成模拟电压 → 功放<b style="color:var(--text)">线性放大</b>到能推喇叭。</p>
+          <div class="formula">输出管工作在<b style="color:var(--a2)">线性区</b><br>
+            管子始终「半导通」<b style="color:var(--text)">参与分压</b><br>
+            <span style="color:var(--a4)">分掉的电压 → 全部变成热量</span><br>
+            <span style="color:var(--a4)">效率 ≈ 50%</span></div>
+        </div>
+        <div class="card" data-ref="D-CLASS">
+          <h3 style="color:var(--a1)">D 类：只开关，不放大</h3>
+          <p style="margin-bottom:11px">输出管<b style="color:var(--text)">只有两种状态</b>：彻底导通、彻底关断。</p>
+          <div class="formula">完全导通 → 管压降 ≈ 0 → <b style="color:var(--a1)">功耗 ≈ 0</b><br>
+            完全关断 → 电流 ≈ 0 → <b style="color:var(--a1)">功耗 ≈ 0</b><br>
+            <span style="color:var(--a1)">效率 &gt; 90%，几乎不发热</span></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px;background:var(--surface2)" data-ref="PWM">
+        <h3 style="color:var(--a2)">两个关键机制：PWM 调制 + 喇叭线圈自滤波</h3>
+        <div class="g2" style="gap:18px;margin-top:8px">
+          <pre><span class="c">大信号 → 占空比高</span>
+<span class="k">▔▔▔▔▔▁▔▔▔▔▔▁▔▔▔▔▔▁</span>
+
+<span class="c">小信号 → 占空比低</span>
+<span class="k">▔▁▁▁▁▁▔▁▁▁▁▁▔▁▁▁▁▁</span></pre>
+          <div class="formula">喇叭线圈 = <b style="color:var(--text)">天然低通滤波器</b><br>
+            电感阻碍电流突变<br>
+            <span style="color:var(--a1)">→ 高频方波被平滑成模拟波形</span><br>
+            <span style="color:var(--a1)">→ 不需要独立 DAC 芯片</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span>ESP32-BOX / EP.1 原理篇</span><span class="tn"></span></div>
+  </section>
+
+  <!-- ============ 示例 C · 数据页（表格 + 时序图） ============ -->
+  <section class="slide">
+    <div class="eyebrow">Principle · I2S</div>
+    <h2>PCM 怎么从芯片传到功放</h2>
+    <p class="sub">音频对总线的特殊要求是「等时性」—— 不只要送到，还要精确准时地送到</p>
+    <div class="body top">
+      <div class="g3">
+        <div class="card" data-ref="BCLK">
+          <h3><span class="dot" style="background:var(--a1)"></span>BCLK · 位时钟</h3>
+          <p style="margin-bottom:10px">每个上升沿 = 划分<b style="color:var(--text)">比特边界</b>。</p>
+          <div class="formula">44100 × 16 × 2<br>= <b style="color:var(--a2)">1.4112 MHz</b></div>
+        </div>
+        <div class="card" data-ref="LRC">
+          <h3><span class="dot" style="background:var(--a3)"></span>LRC · 帧同步</h3>
+          <p style="margin-bottom:10px">划分<b style="color:var(--text)">声道边界</b>，低左高右。</p>
+          <div class="formula">频率 = 采样率<br>= <b style="color:var(--a3)">44100 Hz</b></div>
+        </div>
+        <div class="card" data-ref="DIN">
+          <h3><span class="dot" style="background:var(--a2)"></span>DIN · 数据</h3>
+          <p style="margin-bottom:10px">串行逐位送出，<b style="color:var(--text)">高位在前</b>。</p>
+          <div class="formula">1 个 16 位样本<br>= <b style="color:var(--a2)">16 个 BCLK 周期</b></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px;background:var(--surface2)" data-ref="TIMING">
+        <h3>三根线的配合：时间信息在时钟里，不在数据里</h3>
+        <pre style="margin-top:8px;background:var(--surface)"><span class="c">        ├──────── 左声道 16bit ────────┤├──────── 右声道 16bit ────────┤</span>
+LRC <span class="k">▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▏▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔</span> <span class="c">44.1 kHz</span>
+BCLK <span class="k">▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁▏▁</span> <span class="c">1.41 MHz</span>
+DIN  <span class="s">╳ b15 ╳ b14 ╳ b13 ╳ .................... ╳ b1 ╳ b0 ╳</span>          <span class="c">MSB first</span></pre>
+        <table style="margin-top:12px">
+          <tr><th style="width:150px">信号</th><th style="width:130px">频率</th><th>承载的信息</th></tr>
+          <tr><td class="k"><code>BCLK</code></td><td>1.4112 MHz</td><td>比特边界 —— 每个沿代表「这一位有效」</td></tr>
+          <tr><td class="k"><code>LRC</code></td><td>44100 Hz</td><td>声道边界 —— 整个系统的节拍器</td></tr>
+          <tr><td class="k"><code>DIN</code></td><td>—</td><td>样本内容本身，<b style="color:var(--text)">不含任何时间标记</b></td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="foot"><span>ESP32-BOX / EP.1 原理篇</span><span class="tn"></span></div>
+  </section>
+
+</div>
+
+<div id="picker"></div>
+
+<script>
+const THEMES=[
+  {id:'scope',    name:'示波器 SCOPE',    desc:'荧光余晖 · 网格 · 扫描线',  sw:['#5dfca0','#ffc247','#4de5ff','#070b09']},
+  {id:'pcb',      name:'电路板 PCB',      desc:'阻焊绿 · 镀金走线 · 丝印',  sw:['#d9a520','#c87137','#5ec98a','#0a1410']},
+  {id:'blueprint',name:'蓝图 BLUEPRINT',  desc:'工程制图 · 数据手册',      sw:['#5aa9f0','#7fd4ff','#ffd166','#0b1826']},
+  {id:'terminal', name:'终端 TERMINAL',   desc:'琥珀 CRT · 直角 · 光标',   sw:['#ffb000','#5ee06a','#63c8ff','#0a0a0b']},
+  {id:'neon',     name:'霓虹 NEON',       desc:'渐变辉光 · 短视频友好',    sw:['#00e5ff','#ff3fa4','#a97bff','#08070f']},
+];
+const stage=document.getElementById('stage');
+const slides=[...document.querySelectorAll('.slide')];
+const picker=document.getElementById('picker');
+let cur=0, theme=0;
+
+THEMES.forEach((t,i)=>{
+  const b=document.createElement('button');
+  b.innerHTML=`<b>${i+1} ${t.name}</b><span>${t.desc}</span>
+    <span class="sw">${t.sw.map(c=>`<i style="background:${c}"></i>`).join('')}</span>`;
+  b.onclick=()=>setTheme(i);
+  picker.appendChild(b);
+});
+
+function setTheme(i){
+  theme=i; stage.dataset.theme=THEMES[i].id;
+  [...picker.children].forEach((b,j)=>b.classList.toggle('on',j===i));
+}
+function render(){
+  slides.forEach((s,i)=>s.classList.toggle('on',i===cur));
+  const n=slides[cur].querySelector('.tn');
+  if(n) n.textContent=String(cur+1).padStart(2,'0')+' / '+String(slides.length).padStart(2,'0');
+}
+function fit(){
+  const s=Math.min(innerWidth/1280,(innerHeight-58)/720);
+  stage.style.transform=`translate(-50%,-50%) scale(${s})`;
+  stage.style.top=`calc(50% - 29px)`;
+}
+addEventListener('resize',fit);
+addEventListener('keydown',e=>{
+  if(e.key>='1'&&e.key<='5'){ setTheme(+e.key-1); return; }
+  if(e.key==='ArrowRight'||e.key===' '){ e.preventDefault(); cur=(cur+1)%slides.length; render(); }
+  if(e.key==='ArrowLeft'){ e.preventDefault(); cur=(cur-1+slides.length)%slides.length; render(); }
+  if(e.key==='f'||e.key==='F'){ document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen(); }
+});
+setTheme(0); render(); fit();
+</script>
+</body>
+</html>
