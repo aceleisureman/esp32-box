@@ -15,10 +15,43 @@ logger = logging.getLogger(__name__)
 
 
 MAX_DEVICE_AUDIO_BYTES = 4096
+# 设备端 arduinoWebSockets 的 WEBSOCKETS_MAX_DATA_SIZE 只有 15KB，
+# 收到更大的单条消息会直接以 1009 断开连接；下行音频必须分片，
+# 且分片为偶数字节以保持 PCM16 采样对齐。
+DEVICE_AUDIO_CHUNK_BYTES = 4096
 THREAD_JOIN_TIMEOUT_SECONDS = 2.0
 DEFAULT_MODEL = "stepaudio-2.5-realtime"
 DEFAULT_VOICE = "qingchunshaonv"
 REALTIME_URL = "wss://api.stepfun.com/step_plan/v1/realtime?model={model}"
+
+# 唤醒问候：会话就绪后让模型先开口。人设与该设备记忆已注入
+# session.instructions，模型可据此把问候说得个性化。
+DEFAULT_GREETING_PROMPT = (
+    "用户刚唤醒你，请先主动打招呼：用一句话简短问候，"
+    "例如“你好啊，有什么可以帮你的吗？”。"
+    "如果记忆里有用户的称呼或上次聊到的事，自然地带上一句，"
+    "让问候更亲切。总共不超过两句话。"
+)
+
+
+def build_greeting_request() -> Optional[dict]:
+    """构造唤醒问候的 response.create；返回 None 表示已禁用。
+
+    设置环境变量 STEPFUN_GREETING_PROMPT 可自定义问候指令，
+    置为空字符串则关闭唤醒问候。
+    """
+    prompt = os.environ.get(
+        "STEPFUN_GREETING_PROMPT", DEFAULT_GREETING_PROMPT
+    ).strip()
+    if not prompt:
+        return None
+    return {
+        "type": "response.create",
+        "response": {
+            "modalities": ["text", "audio"],
+            "instructions": prompt,
+        },
+    }
 
 
 def build_session_update(voice: str, device_id: str = "") -> dict:
@@ -128,6 +161,7 @@ class StepFunRealtimeSession:
         self._device_id = ""           # session.start 时确定，用于记忆隔离
         self._last_user_turn = ""      # 当前轮用户输入（等待回复后落库）
         self._reply_pending = False    # 回复是否完成、需写入记忆
+        self._greeting_sent = False    # 唤醒问候只在会话就绪时发一次
 
     @classmethod
     def from_env(cls, device_socket, api_key: str):
@@ -338,6 +372,17 @@ class StepFunRealtimeSession:
                     elif event_type == "error":
                         detail = f" error={event.get('error', {})!r}"
                     logger.info("[REALTIME] upstream event=%s%s", event_type, detail)
+                if (event_type == "session.updated" and
+                        not self._greeting_sent):
+                    # 会话配置生效后让模型先开口问候（人设+记忆已在
+                    # instructions 里）。设备端把它当普通回复播放。
+                    self._greeting_sent = True
+                    greeting = build_greeting_request()
+                    if greeting is not None:
+                        self._upstream.send(
+                            json.dumps(greeting, ensure_ascii=False)
+                        )
+                        logger.info("[REALTIME] wake greeting requested")
                 mapped = stepfun_event_to_device(event)
                 if mapped is None:
                     continue
@@ -357,7 +402,11 @@ class StepFunRealtimeSession:
                     if reply_text:
                         memory.append(self._device_id, "assistant", reply_text)
                 if kind == "binary":
-                    self._send_device(payload)
+                    for offset in range(0, len(payload),
+                                        DEVICE_AUDIO_CHUNK_BYTES):
+                        self._send_device(
+                            payload[offset:offset + DEVICE_AUDIO_CHUNK_BYTES]
+                        )
                 else:
                     self._send_device_json(payload)
         except Exception as error:

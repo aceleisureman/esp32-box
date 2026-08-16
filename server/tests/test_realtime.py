@@ -1,3 +1,4 @@
+import base64
 import json
 import queue
 import threading
@@ -8,6 +9,7 @@ from unittest.mock import patch
 from app import app
 
 from realtime import (
+    DEVICE_AUDIO_CHUNK_BYTES,
     MAX_DEVICE_AUDIO_BYTES,
     StepFunRealtimeSession,
     build_session_update,
@@ -310,6 +312,71 @@ class RealtimeSessionTest(unittest.TestCase):
             messages,
         )
         self.assertEqual(upstream.sent, [])
+
+    def test_large_audio_delta_is_chunked_for_device(self):
+        pcm = b"\x01\x02" * 10241  # 20482 字节，超过设备端 15KB 单帧上限
+        device = BlockingSocket()
+        upstream = FakeSocket([
+            json.dumps({
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(pcm).decode("ascii"),
+            })
+        ])
+        session = StepFunRealtimeSession(
+            device, "secret", "stepaudio-2.5-realtime", "wenrounansheng",
+            connect_factory=lambda *args, **kwargs: upstream,
+        )
+
+        session.run()
+
+        binary_frames = [
+            frame for frame in device.sent if isinstance(frame, bytes)
+        ]
+        self.assertEqual(
+            [len(frame) for frame in binary_frames],
+            [DEVICE_AUDIO_CHUNK_BYTES] * 5 + [2],
+        )
+        self.assertEqual(b"".join(binary_frames), pcm)
+
+    def test_session_updated_triggers_wake_greeting_once(self):
+        device = BlockingSocket()
+        upstream = FakeSocket([
+            json.dumps({"type": "session.updated"}),
+            json.dumps({"type": "session.updated"}),
+        ])
+        session = StepFunRealtimeSession(
+            device, "secret", "stepaudio-2.5-realtime", "wenrounansheng",
+            connect_factory=lambda *args, **kwargs: upstream,
+        )
+
+        session.run()
+
+        greetings = [
+            json.loads(value) for value in upstream.sent
+            if json.loads(value).get("type") == "response.create"
+        ]
+        self.assertEqual(len(greetings), 1)
+        self.assertEqual(
+            greetings[0]["response"]["modalities"], ["text", "audio"]
+        )
+        self.assertTrue(greetings[0]["response"]["instructions"])
+
+    @patch.dict("os.environ", {"STEPFUN_GREETING_PROMPT": "  "})
+    def test_wake_greeting_disabled_by_empty_prompt(self):
+        device = BlockingSocket()
+        upstream = FakeSocket([json.dumps({"type": "session.updated"})])
+        session = StepFunRealtimeSession(
+            device, "secret", "stepaudio-2.5-realtime", "wenrounansheng",
+            connect_factory=lambda *args, **kwargs: upstream,
+        )
+
+        session.run()
+
+        self.assertEqual(
+            [value for value in upstream.sent
+             if json.loads(value).get("type") == "response.create"],
+            [],
+        )
 
     def test_accepts_only_whitelisted_text_events(self):
         frames = [
